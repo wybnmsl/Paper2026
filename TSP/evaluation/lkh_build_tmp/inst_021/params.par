@@ -1,0 +1,9 @@
+PROBLEM_FILE = /home/nas/wangrongzheng/EoH-main/zTSP/evaluation/lkh_build_tmp/inst_021/problem.tsp
+OUTPUT_TOUR_FILE = /home/nas/wangrongzheng/EoH-main/zTSP/evaluation/lkh_build_tmp/inst_021/solution.tour
+RUNS = 1
+SEED = 63
+TIME_LIMIT = 60
+TRACE_LEVEL = 0
+MOVE_TYPE = 5
+PATCHING_C = 3
+PATCHING_A = 2
