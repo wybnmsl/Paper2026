@@ -62,14 +62,15 @@ At test time, PLR retrieves a group-specific solver to warm-start evalution.
 ### Table of Contents
 
 * <a href='#Environment Preparation'>1. Environment Preparation</a>  
-* <a href='#Repo Structure'>2. Repo Structure</a>  
-* <a href='#Data Preparation'>3. Data Preparation</a>  
-* <a href='#LLM Setup'>4. LLM Setup</a>  
-* <a href='#Quick Start (TSP_GLS)'>5. Quick Start (TSP_GLS)</a>  
-* <a href='#Run DASH (Generic Workflow)'>6. Run DASH (Generic Workflow)</a>  
-* <a href='#PLR Workflow'>7. PLR Workflow</a>  
-* <a href='#Reproducing & Evaluation'>8. Reproducing & Evaluation</a>  
-* <a href='#Add a New Plugin'>9. Add a New Plugin</a>   
+* <a href='#Repo Structure'>2. Repo Structure</a> 
+* <a href='#Benchmark Problems and Solver Backbones'>3. Benchmark Problems and Solver Backbones</a>  
+* <a href='#Data Preparation'>4. Data Preparation</a>  
+* <a href='#LLM Setup'>5. LLM Setup</a>  
+* <a href='#Quick Start (TSP_GLS)'>6. Quick Start (TSP_GLS)</a>  
+* <a href='#Run DASH (Generic Workflow)'>7. Run DASH (Generic Workflow)</a>  
+* <a href='#PLR Workflow'>8. PLR Workflow</a>  
+* <a href='#Reproducing & Evaluation'>9. Reproducing & Evaluation</a>  
+* <a href='#Add a New Plugin'>10. Add a New Plugin</a>   
 
 ---
 
@@ -118,9 +119,37 @@ DASH/
 
 ---
 
+<span id='Benchmark Problems and Solver Backbones'/>
+
+### 3. Benchmark Problems and Solver Backbones <a href='#all_catelogue'>[Back to Top]</a>
+
+DASH evaluates on four benchmark problems with standardized **solution representation**, **objective**, and **gap reference**:
+
+| Problem | Output / Objective | Gap reference (`f*`) |
+|---|---|---|
+| TSP | Output: tour<br>Objective: minimize tour length | TSPLIB best-known / optimal |
+| CVRP | Output: set of routes<br>Objective: minimize total route length<br>Constraint: per-route demand `<= Q` | CVRPLIB best-known / optimal |
+| BPP | Output: online assignment policy<br>Objective: minimize number of bins used<br>Constraint: bin load `<= C` | Per-instance relaxation lower bound `lb` |
+| MKP | Output: binary selection vector `x`<br>Objective: maximize profit (reported as minimization by `f=-profit`)<br>Constraint: `Ax <= b` | OR-Library optimal |
+
+Solver backbones used in our experiments:
+
+| Backbone / Package | Role in DASH |
+|---|---|
+| GLS | Primary TSP backbone under fixed evaluation protocol / time budget |
+| ACO | Unified backbone for CVRP and MKP to keep a consistent solver skeleton |
+| GOA | Online BPP backbone following standard greedy assignment protocol (fixed item stream) |
+| ILS | Alternative TSP backbone for cross-framework transferability studies |
+| Concorde | Strong off-the-shelf TSP solver as a reference baseline for solution quality |
+| LKH3 | Classical high-performance TSP heuristic baseline |
+| OR-Tools | Widely used OR toolkit baseline for routing/assignment solvers |
+
+
+---
+
 <span id='Data Preparation'/>
 
-### 3. Data Preparation <a href='#all_catelogue'>[Back to Top]</a>
+### 4. Data Preparation <a href='#all_catelogue'>[Back to Top]</a>
 
 Put datasets under `Data/`:
 
@@ -139,7 +168,7 @@ Data/
 
 <span id='LLM Setup'/>
 
-### 4. LLM Setup <a href='#all_catelogue'>[Back to Top]</a>
+### 5. LLM Setup <a href='#all_catelogue'>[Back to Top]</a>
 
 DASH supports multiple LLM backends through `src/DASH/llm/`:
 - cloud API
@@ -164,7 +193,7 @@ Then, in your runner/config, map these into your parameter fields:
 
 <span id='Quick Start (TSP_GLS)'/>
 
-### 5. Quick Start (TSP_GLS) <a href='#all_catelogue'>[Back to Top]</a>
+### 6. Quick Start (TSP_GLS) <a href='#all_catelogue'>[Back to Top]</a>
 
 TSP GLS plugin lives in:
 
@@ -195,7 +224,7 @@ Inside `plugins/TSP_GLS/runDASH_batch.py` (or equivalent):
 
 <span id='Run DASH (Generic Workflow)'/>
 
-### 6. Run DASH (Generic Workflow) <a href='#all_catelogue'>[Back to Top]</a>
+### 7. Run DASH (Generic Workflow) <a href='#all_catelogue'>[Back to Top]</a>
 
 A typical DASH workflow is:
 
@@ -228,7 +257,7 @@ results/<run_name>/<case_tag>/
 
 <span id='PLR Workflow'/>
 
-### 7. PLR Workflow <a href='#all_catelogue'>[Back to Top]</a>
+### 8. PLR Workflow <a href='#all_catelogue'>[Back to Top]</a>
 
 PLR (Profiled Library Retrieval) is designed to decouple archiving from evolution:
 
@@ -245,7 +274,7 @@ In code, PLR typically lives at:
 
 <span id='Reproducing & Evaluation'/>
 
-### 8. Reproducing & Evaluation <a href='#all_catelogue'>[Back to Top]</a>
+### 9. Reproducing & Evaluation <a href='#all_catelogue'>[Back to Top]</a>
 
 **(A) Run DASH training (offline evolution)**
 - Use plugin batch runners OR the unified runner under `src/DASH/runner/` if you have it wired.
@@ -265,7 +294,7 @@ In code, PLR typically lives at:
 
 <span id='Add a New Plugin'/>
 
-### 9. Add a New Plugin <a href='#all_catelogue'>[Back to Top]</a>
+### 10. Add a New Plugin <a href='#all_catelogue'>[Back to Top]</a>
 
 Create a new folder:
 
