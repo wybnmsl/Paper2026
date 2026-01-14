@@ -1,18 +1,28 @@
-# zMKP/test_aco_engine_grid.py
 # -*- coding: utf-8 -*-
 """
 Manual tuning / grid test for MKP ACO engine.
 
-Run:
-  python zMKP/test_aco_engine_grid.py --data Data/MKP/mknapcb3.txt --res Data/MKP/mkcbres.txt --idx 0 --time 1 --runs 1
+Run (from repo root):
+  python plugins/MKP_ACO/test/test_aco_engine_grid.py \
+    --data Data/MKP/mknapcb3.txt --res Data/MKP/mkcbres.txt --idx 0 --time 1 --runs 1
 """
 
 from __future__ import annotations
+
 import argparse
 import os
-from zMKP.utils.readMKP import load_instance, sanity_check_instance
-from zMKP.aco.spec import ACOSpec
-from zMKP.aco.aco_run import solve_instance_with_spec_gap
+import sys
+
+# Ensure imports work when running as a plain script
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+PLUGINS_DIR = os.path.join(REPO_ROOT, "plugins")
+if PLUGINS_DIR not in sys.path:
+    sys.path.insert(0, PLUGINS_DIR)
+
+from MKP_ACO.utils.readMKP import load_instance, sanity_check_instance  # type: ignore
+from MKP_ACO.aco.spec import ACOSpec  # type: ignore
+from MKP_ACO.aco.aco_run import solve_instance_with_spec_gap  # type: ignore
 
 
 def main():
@@ -34,7 +44,8 @@ def main():
     print("alpha beta rho q0 ants candk dep mu | best_profit gap% tLDR iters ls_time ls% time_used")
     print("------------------------------------------------------------")
 
-    # 这组配置偏“多代学习”，让 1 秒能跑多代（尤其 n>=500）
+    # These configurations emphasize "multi-iteration learning" so that 1s can run many iterations
+    # (especially for n >= 500). Adjust as needed.
     grid = [
         dict(alpha=1.0, beta=3.0, rho=0.12, q0=0.20, n_ants=24, candk=25, deposit="rank", rank_mu=10,
              ls="kflip", ls_elite_k=3, ls_elite_steps=120, ls_all_ants_steps=10,
@@ -63,7 +74,7 @@ def main():
         for r in range(args.runs):
             spec = ACOSpec(time_limit_s=args.time, seed=args.seed + 1000 * gi + r, **cfg)
             gap, meta = solve_instance_with_spec_gap(inst, spec, guide_module=None, return_meta=True)
-            best_profit = meta.get('best_profit', 0)
+            best_profit = meta.get("best_profit", 0)
 
             best_profit_runs.append(best_profit)
             gap_runs.append(meta.get("gap", 0.0))

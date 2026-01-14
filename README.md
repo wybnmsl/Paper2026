@@ -5,23 +5,55 @@
 This repository contains the **framework + plugins** for **DASH**, an LLM-driven system for *automatic heuristic design* in combinatorial optimization.
 
 
-**📢 Notice (Active Development)**  
-This repository is currently under active development. Core code, execution scripts, and related materials will be uploaded soon.
+**📢 Notice (Active Development)**   
+We have provided the core code, execution scripts, and related materials. Some additional contents are still under active maintenance and will be continuously updated.
+
 
 ---
 
-## Highlights
+## Key Features
 
-- **LLM-driven solver co-evolution** across **MDL / MCL / SSL** (mechanism + schedule).
-- **Trajectory-aware efficiency signals** (runtime/trajectory logging) and acceptance rules aligned with the paper design.
-- **PLR (Profiled Library Retrieval)**: maintain **group-wise archives** during evolution and **warm-start** test-time runs by retrieving a specialized solver from the matched group archive.
-- **Plugin-first design**: each problem lives in `plugins/<PROBLEM>/` with its own `problem.py`, `spec.py`, operators, runner, (optional) `plr.py`.
+### 1. DASH Framework
+We propose **DASH**, an **LLM-driven heuristic design framework** that co-evolves a solver through three stages:
+
+- **MDL (Mechanism Discovery Layer)**: Evolves the **search mechanism** by editing and selecting solver code (e.g., update rules, guidance design, acceptance logic).
+- **MCL (Mechanism Consolidation Layer)**: Consolidates the mechanism via **structure-preserving refactoring** to reduce redundancy and avoid code bloat while keeping performance stable.
+- **SSL (Schedule Shaping Layer)**: Shapes the **runtime schedule** in two steps: **Compression** to remove computational slack, then **Enhancement** to reallocate the recovered budget for better final quality.
+
+### 2. tLDR Metric and Acceptance Rules
+DASH evaluates candidates using **trajectory-aware signals** instead of endpoint-only metrics:
+
+- **tLDR (Trajectory-aware Lyapunov Decay Rate)**: Measures how efficiently the **incumbent gap trajectory** decreases over time, capturing anytime performance across the full budget.
+- **Layer-aligned acceptance rules**: Uses terminal quality and tLDR for MDL and MCL comparisons, while SSL Compression accepts schedules based on **actual runtime reduction** with controlled quality tolerance.
+
+### 3. PLR Mechanism
+We integrate **PLR (Profiled Library Retrieval)** to reduce re-adaptation cost under distribution shifts:
+
+- **Instance profiling and grouping**: Assigns training instances into groups based on lightweight instance profiles.
+- **Group-wise archives during evolution**: Maintains a **top-k specialized solver library** per group alongside a global population.
+- **Test-time warm start**: Retrieves the best archived solver for the matched group and runs it directly, **without additional LLM calls**.
+
+### 4. Performance Improvements
+DASH delivers:
+
+✅ **Faster convergence** by selecting solvers with better anytime trajectories (tLDR).  
+✅ **Higher runtime efficiency** through schedule compression and reallocation.  
+✅ **Lower adaptation cost** via PLR warm-start under heterogeneous distributions.  
+✅ **Stronger robustness** by maintaining group-specialized solver archives.
+
+
+
+
 
 ---
 
 Our entire work flow can be summarized as follows:
 
 ![](assets/method.jpg)
+
+**Overview of DASH:** Offline evolution co-evolves the solver across MDL, MCL, and SSL using terminal quality and trajectory efficiency for selection.
+In parallel, PLR maintains group-wise archives from evaluated candidates.
+At test time, PLR retrieves a group-specific solver to warm-start evalution.
 
 ---
 
@@ -37,8 +69,7 @@ Our entire work flow can be summarized as follows:
 * <a href='#Run DASH (Generic Workflow)'>6. Run DASH (Generic Workflow)</a>  
 * <a href='#PLR Workflow'>7. PLR Workflow</a>  
 * <a href='#Reproducing & Evaluation'>8. Reproducing & Evaluation</a>  
-* <a href='#Add a New Plugin'>9. Add a New Plugin</a>  
-* <a href='#FAQ & Troubleshooting'>10. FAQ & Troubleshooting</a>  
+* <a href='#Add a New Plugin'>9. Add a New Plugin</a>   
 
 ---
 
@@ -53,14 +84,11 @@ Our entire work flow can be summarized as follows:
 conda create -n DASH python=3.10 -y
 conda activate DASH
 
-# 2) Install this repo (editable)
-# Run at repo root where setup.py (or pyproject.toml) exists
-pip install -U pip
-pip install -e .
+# 2) Install the requirements
+# Please clone our DASH repo first, and switch to the directory.
+cd DASH
+pip install -r requirements.txt
 
-# 3) (Optional) install torch / accelerate depending on your runtime
-# pip install torch --index-url https://download.pytorch.org/whl/cu121
-# pip install accelerate
 ```
 
 ---
@@ -98,13 +126,13 @@ Put datasets under `Data/`:
 
 ```text
 Data/
-  TSPLIB/         # TSPLIB instances / opt solutions (if needed by plugin)
-  CVRPLIB/        # CVRP benchmark sets
-  MKP/            # ORLIB-style MKP data
+  TSPLIB/         # Instances for TSP
+  CVRPLIB/        # Instances for CVRP
+  MKP/            # Instances for MKP
 ```
 
 **Notes**
-- Some plugins can also generate training instances (synthetic).
+- **BPP** instances are generated by the plugin scripts (see `plugins/BPP_GOA/utils/`), following the same data-generation protocol described in the paper.
 - If you run baselines (e.g., LKH3), follow the baseline’s own scripts under `Baselines/`.
 
 ---
@@ -114,11 +142,11 @@ Data/
 ### 4. LLM Setup <a href='#all_catelogue'>[Back to Top]</a>
 
 DASH supports multiple LLM backends through `src/DASH/llm/`:
-- cloud API (OpenAI-style endpoints)
+- cloud API
 - HF inference
-- local server (OpenAI-compatible)
+- local server
 
-Prefer environment variables (do not hardcode keys):
+For cloud API:
 
 ```bash
 export DASH_API_ENDPOINT="https://YOUR_ENDPOINT/v1/chat/completions"
@@ -179,7 +207,7 @@ A typical DASH workflow is:
    - population snapshots
    - operator histories
    - LLM dialogues (optional)
-4) (Optional) PLR:
+4) PLR:
    - compute instance profiles, build groups
    - archive top-k solvers per group during evolution
    - retrieve group-specialized solver at test time for warm-start
@@ -209,7 +237,7 @@ PLR (Profiled Library Retrieval) is designed to decouple archiving from evolutio
 - at test time, retrieve from the matched group archive for warm-start
 
 In code, PLR typically lives at:
-- `plugins/<PROBLEM>/plr.py` (if enabled)
+- `plugins/<PROBLEM>/plr.py`
 - `plugins/<PROBLEM>/problem.py` (profile computation / grouping hooks)
 - plus archive update hooks in the evaluation pipeline.
 
@@ -244,7 +272,7 @@ Create a new folder:
 ```text
 plugins/NEW_PROBLEM/
   __init__.py
-  problem.py        # dataset loading + evaluation protocol + instance profiles (optional)
+  problem.py        # dataset loading + evaluation protocol + instance profiles
   spec.py           # solver spec (θ/σ representation)
   operators.py      # mutation/edit operators used by MDL/MCL/SSL
   run.py            # run solver on one instance using a spec
@@ -254,7 +282,7 @@ plugins/NEW_PROBLEM/
   test/             # small sanity tests
 ```
 
-**Minimal contract (recommended)**
+**Minimal requirements (recommended)**
 - `problem.py` exposes:
   - `evaluate(individual/spec, instances) -> objective + logs`
   - `initial_solver()` or `initial_population()`

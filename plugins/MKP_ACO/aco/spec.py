@@ -1,4 +1,3 @@
-# aco/spec.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from dataclasses import dataclass, asdict
@@ -11,62 +10,62 @@ class ACOSpec:
     max_iters: int = 1_000_000
     seed: int = 0
 
-    # strict budget control
-    # 更小 margin 让 1s 能多跑一点，但仍保留安全余量
+    # Strict budget control
+    # Smaller margin allows more iterations under short budgets, while keeping a safety buffer
     time_guard_margin_s: float = 0.03
-    # 如果离 deadline 太近，跳过 daemon（重 LS）
+    # If too close to deadline, skip daemon (heavy local search)
     skip_daemon_if_time_left_s: float = 0.25
-    # 如果离 deadline 太近，也跳过 elite 强 LS
+    # If too close to deadline, skip elite strong local search
     skip_elite_if_time_left_s: float = 0.20
-    # 如果离 deadline 太近，也可以跳过 pheromone update（一般很快，但兜底）
+    # If too close to deadline, optionally skip pheromone update (usually fast, but guarded)
     skip_pheromone_if_time_left_s: float = 0.008
 
-    # colony（默认更偏“多代学习”的设置）
+    # Colony (default encourages multi-iteration learning)
     n_ants: int = 25
     ants_greedy_frac: float = 0.25
     candk: int = 25
 
-    # transition
+    # Transition
     alpha: float = 1.0
     beta: float = 3.2
     q0: float = 0.20
     use_local_pheromone_update: bool = True
     phi: float = 0.10
 
-    # pheromone update
+    # Pheromone update
     rho: float = 0.12
     deposit: str = "rank"          # {"ibest","gbest","rank"}
     rank_mu: int = 10
     elite_weight: float = 1.0
     gbest_weight: float = 0.6
 
-    # tau bounds
+    # Tau bounds
     tau0: float = 0.5
     use_tau_bounds: bool = True
     tau_min_ratio: float = 0.05
     tau_max: float = 1.0
 
-    # stagnation & restart
+    # Stagnation & restart
     stagnation_iters: int = 60
     restart_keep_best: bool = True
     restart_tau0: Optional[float] = None
 
-    # repair
+    # Repair
     allow_infeasible_construct: bool = False
     repair: str = "drop_refill"      # {"none","drop","drop_refill"}
     drop_rule: str = "min_ratio"     # {"min_ratio","min_profit","max_weight"}
 
-    # LS schedule（默认轻很多，给 ACO 迭代机会）
+    # Local search schedule (kept light by default to preserve ACO iterations)
     ls_all_ants_steps: int = 12
     ls_elite_k: int = 3
     ls_elite_steps: int = 120
     ls: str = "kflip"                # {"none","1swap","kflip","add_drop","hybrid"}
 
-    # daemon（默认关闭，短预算下很容易把迭代吃掉）
+    # Daemon (disabled by default; can consume the budget under short time limits)
     daemon_every: int = 0
     daemon_ls_steps: int = 500
 
-    # dynamic multipliers（短预算下仍有收益，但别太频繁更新）
+    # Dynamic multipliers (useful under short budgets, but avoid too frequent updates)
     use_multipliers: bool = True
     mult_update_every: int = 2
     mult_eta_power: float = 1.0

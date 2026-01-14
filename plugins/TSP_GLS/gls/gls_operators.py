@@ -1,10 +1,3 @@
-"""Low-level GLS operators for TSP.
-
-This module keeps the numba-accelerated 2-opt / relocate operators, and provides
-a pure-Python Or-opt(chain_len=2/3) operator (used as an occasional extra move
-in the stronger local search).
-"""
-
 from __future__ import annotations
 
 import numpy as np

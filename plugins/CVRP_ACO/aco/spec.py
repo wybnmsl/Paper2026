@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+
+# ------------------------------ Engine / Schedule ------------------------------
 
 @dataclass
 class EngineSpec:
     variant: str = "MMAS"           # "ACS" | "MMAS"
     seed: int = 0
-    explore_frac: float = 0.45      # fraction of time for explore
-    exploit_frac: float = 0.45      # fraction of time for exploit (rest is late exploit + intensify)
+    explore_frac: float = 0.45      # fraction of time for exploration
+    exploit_frac: float = 0.45      # fraction of time for exploitation (rest for late exploit + intensify)
     intensify_last_s: float = 1.0   # last seconds reserved for intensification
 
 
@@ -19,32 +21,40 @@ class InitSpec:
     ls_after_init: bool = True
 
 
+# ------------------------------ ACO construction ------------------------------
+
 @dataclass
 class ConstructSpec:
     n_ants: int = 40
     alpha: float = 1.0
     beta: float = 2.5
-    q0: float = 0.25                # ACS exploitation prob
+    q0: float = 0.25                # ACS exploitation probability
     candidate_k: int = 24
-    demand_gamma: float = 0.0       # optional bias toward high demand when remaining cap is small
+    demand_gamma: float = 0.0       # optional bias when remaining capacity is small
 
+
+# ------------------------------ Pheromone dynamics ------------------------------
 
 @dataclass
 class PheromoneSpec:
     rho: float = 0.15
     q: float = 1.0
-    tau_init: str = "auto"          # "auto" or numeric (string accepted)
+    tau_init: str = "auto"          # "auto" or numeric string
     tau_min_factor: float = 0.05
 
     deposit: str = "gbest"          # "gbest" | "ibest" | "elite"
     elite_m: int = 2
 
-    rank_mu: int = 5                # for "ibest"
+    # for "ibest" deposit
+    rank_mu: int = 5
     rank_weight: float = 0.85
 
+    # restart (MMAS)
     restart_no_improve: int = 35
     restart_reset_strength: float = 0.65
 
+
+# ------------------------------ Local search / ALNS ------------------------------
 
 @dataclass
 class LocalSearchSpec:
@@ -57,7 +67,7 @@ class LocalSearchSpec:
     neigh: List[str] = field(default_factory=lambda: ["2opt_intra", "relocate1", "swap1", "2opt_star"])
     max_moves: int = 160000
     first_improve: bool = True
-    granular_k: int = 24            # for candidate-based neighborhood pruning
+    granular_k: int = 24
 
 
 @dataclass
@@ -122,7 +132,8 @@ def default_aco_spec() -> ACOSpec:
 def from_json(js: Optional[Dict[str, Any]]) -> ACOSpec:
     """
     Tolerant parser for LLM-generated dict specs.
-    Missing fields use defaults; unknown fields are ignored.
+    - Missing fields fall back to defaults
+    - Unknown fields are ignored
     """
     base = default_aco_spec()
     if not isinstance(js, dict):
@@ -143,6 +154,6 @@ def from_json(js: Optional[Dict[str, Any]]) -> ACOSpec:
         pheromone=merge_field("pheromone", PheromoneSpec),
         local_search=merge_field("local_search", LocalSearchSpec),
         alns=merge_field("alns", ALNSSpec),
-        guidance=merge("guidance", "guidance"),
-        stopping=merge("stopping", "stopping"),
+        guidance=merge_field("guidance", GuidanceSpec),
+        stopping=merge_field("stopping", StoppingSpec),
     )

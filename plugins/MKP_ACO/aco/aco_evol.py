@@ -1,4 +1,3 @@
-# aco/aco_evol.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -211,7 +210,8 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
     if gbest.profit > 0:
         tau[gbest.x.astype(bool)] = min(spec.tau_max, spec.tau0 * 1.2)
 
-    iters = 0            # “代数”：完成一次 ants 批次就计 1
+    # Iterations: count 1 per completed ants batch (one "generation" in this ACO loop)
+    iters = 0
     stagn = 0
     ls_time = 0.0
     last_mult_update = 0
@@ -222,7 +222,7 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
         if iters >= spec.max_iters:
             break
 
-        # ✅ 修正：只要进入并开始这一代，就先计数
+        # Count the iteration as soon as we enter the loop body for this ants batch
         iters += 1
 
         if spec.use_multipliers and iters > 1 and (iters - 1 - last_mult_update) >= spec.mult_update_every:
@@ -236,7 +236,7 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
         sols: List[AntSolution] = []
         n_greedy = int(round(spec.n_ants * spec.ants_greedy_frac))
 
-        # --- ants batch (construct + repair + light LS) ---
+        # Ants batch (construct + repair + light LS)
         for a in range(spec.n_ants):
             if time.perf_counter() >= deadline:
                 break
@@ -268,7 +268,7 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
         if not sols:
             break
 
-        # --- update gbest (cheap) ---
+        # Update gbest (cheap)
         sols.sort(key=lambda s: s.profit, reverse=True)
         ibest = sols[0]
         if ibest.profit > gbest.profit:
@@ -279,7 +279,7 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
         else:
             stagn += 1
 
-        # --- elite strong LS (skip if time left is small) ---
+        # Elite strong LS (skip if remaining time is too small)
         time_left = deadline - time.perf_counter()
         if spec.ls != "none" and spec.ls_elite_k > 0 and spec.ls_elite_steps > 0 and time_left >= spec.skip_elite_if_time_left_s:
             k = min(spec.ls_elite_k, len(sols))
@@ -302,7 +302,7 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
                 if spec.trace:
                     events.append((time.perf_counter() - t_start, int(gbest.profit)))
 
-        # --- daemon (skip if time left is small) ---
+        # Daemon (skip if remaining time is too small)
         time_left = deadline - time.perf_counter()
         if spec.daemon_every > 0 and (iters % spec.daemon_every == 0) and spec.daemon_ls_steps > 0 and time_left >= spec.skip_daemon_if_time_left_s:
             t0 = time.perf_counter()
@@ -316,12 +316,12 @@ def run_aco_mkp(inst: MKPInstance, spec: ACOSpec, guide_module: Optional[Any] = 
                     if spec.trace:
                         events.append((time.perf_counter() - t_start, int(gbest.profit)))
 
-        # --- pheromone update: 尽量完成（这是“多代 ACO”的关键）---
+        # Pheromone update: try to complete it (important for multi-iteration ACO)
         time_left = deadline - time.perf_counter()
         if time_left >= spec.skip_pheromone_if_time_left_s:
             _pheromone_global_update(tau, sols, gbest, ub=ub, spec=spec)
 
-        # restart
+        # Restart
         if stagn >= spec.stagnation_iters:
             tau0 = spec.restart_tau0 if spec.restart_tau0 is not None else spec.tau0
             tau[:] = float(tau0)

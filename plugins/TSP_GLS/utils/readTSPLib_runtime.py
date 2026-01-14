@@ -1,16 +1,5 @@
-"""
-轻量级 TSPLIB 读取工具（运行时用，不再依赖中间的 TSPAEL64.pkl）。
+# plugins/TSP_GLS/utils/readTSPLib_runtime.py
 
-主要功能：
-- 在给定 root 目录下，根据 name 列表找到 {name}.tsp[.gz] / {name}.opt.tour[.gz]
-- 使用 tsplib95 解析 tsp 文本，构造距离矩阵
-- 读取 solutions 文件（若提供）以获得最优目标值
-- 返回：
-    names:          list[str]
-    coords_list:    list[np.ndarray(N,2)]
-    distmats_list:  list[np.ndarray(N,N)]
-    opt_costs:      np.ndarray[len(names)]
-"""
 from __future__ import annotations
 
 import os
@@ -26,15 +15,8 @@ except Exception:
     tsplib95 = None
 
 
-
 def read_solutions_file(path: str) -> Dict[str, float]:
-    """
-    解析 mastqe/tsplib 仓库里的 solutions 文件，兼容几种常见格式：
-
-    kroA100 : 21282
-    kroB100: 22141
-    kroC100  20749
-    """
+    """Parse a TSPLIB solutions file in common formats."""
     mapping: Dict[str, float] = {}
     if not path or not os.path.exists(path):
         return mapping
@@ -60,7 +42,6 @@ def read_solutions_file(path: str) -> Dict[str, float]:
     return mapping
 
 
-
 def _load_text(path: str) -> str:
     if path.endswith(".gz"):
         with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as f:
@@ -70,9 +51,7 @@ def _load_text(path: str) -> str:
 
 
 def load_tsplib_problem_from_text(text: str):
-    """
-    兼容 tsplib95 的 parse / load 两种接口。
-    """
+    """Support both tsplib95.parse(text) and tsplib95.load(file)."""
     if tsplib95 is None:
         raise RuntimeError("tsplib95 is not installed, but TSPLIB parsing is required.")
 
@@ -93,22 +72,14 @@ def load_tsplib_problem_from_text(text: str):
     return prob
 
 
-
-
-
 def coords_to_array(prob) -> np.ndarray:
-    """
-    从 tsplib95 的 problem 对象里提取 (N,2) 的坐标数组，优先级：
-    1) node_coords（标准 TSPLIB 坐标）
-    2) display_data（DISPLAY_DATA_SECTION）
-    3) 若都没有，则用节点数 N 构造一圈“伪坐标”（均匀分布在单位圆上）
+    """Extract (N,2) coordinates from tsplib95 problem.
 
-    这样可以兼容：
-    - 经典带 NODE_COORD_SECTION 的实例（att48, bier127, gr229 等）
-    - 只有 DISPLAY_DATA_SECTION 的实例（bayg29, bays29 等）
-    - 只有距离矩阵（EXPLICIT）的实例
+    Priority:
+      1) node_coords (NODE_COORD_SECTION)
+      2) display_data (DISPLAY_DATA_SECTION)
+      3) fallback: construct pseudo coordinates on a unit circle (for EXPLICIT instances)
     """
-
     coords = getattr(prob, "node_coords", None)
     if coords:
         xs: list[tuple[float, float]] = []
@@ -144,7 +115,7 @@ def coords_to_array(prob) -> np.ndarray:
             n = 0
 
     if n <= 0:
-        raise ValueError("TSPLIB problem has neither node_coords/display_data nor valid dimension.")
+        raise ValueError("TSPLIB problem has neither coords/display_data nor a valid dimension.")
 
     xs: list[tuple[float, float]] = []
     for i in range(n):
@@ -154,9 +125,7 @@ def coords_to_array(prob) -> np.ndarray:
 
 
 def build_distance_matrix(prob) -> np.ndarray:
-    """
-    使用 tsplib95.get_weight(i, j) 构造 (N,N) 的距离矩阵。
-    """
+    """Build an (N,N) distance matrix via tsplib95.get_weight(i,j)."""
     nodes = sorted(list(prob.get_nodes()))
     n = len(nodes)
     mat = np.zeros((n, n), dtype=np.float64)
@@ -167,12 +136,8 @@ def build_distance_matrix(prob) -> np.ndarray:
     return mat
 
 
-
 def _load_opt_tour_indices(root: str, name: str) -> Optional[np.ndarray]:
-    """
-    读取 {name}.opt.tour[.gz]，解析 TOUR_SECTION 里的城市序列，返回 0-based 序列。
-    若找不到或解析失败，返回 None。
-    """
+    """Load {name}.opt.tour[.gz] and parse TOUR_SECTION into a 0-based order."""
     candidates = [
         os.path.join(root, f"{name}.opt.tour"),
         os.path.join(root, f"{name}.opt.tour.gz"),
@@ -217,15 +182,11 @@ def _load_opt_tour_indices(root: str, name: str) -> Optional[np.ndarray]:
     if not nodes:
         return None
 
-    arr = np.asarray(nodes, dtype=np.int64) - 1
-    return arr
+    return np.asarray(nodes, dtype=np.int64) - 1
 
 
 def tour_cost(distmat: np.ndarray, order: np.ndarray) -> float:
-    """
-    在给定距离矩阵上计算封闭环路的总长度。
-    order 为 0-based 节点序列。
-    """
+    """Compute the cost of a closed tour under distmat."""
     if order is None or len(order) < 2:
         raise ValueError("Empty tour.")
     n = len(order)
@@ -237,12 +198,8 @@ def tour_cost(distmat: np.ndarray, order: np.ndarray) -> float:
     return float(s)
 
 
-
 def find_instances(root: str, names_filter: Optional[Iterable[str]] = None) -> List[str]:
-    """
-    在 root 目录下查找所有 *.tsp / *.tsp.gz 的文件名（不带扩展名），
-    再按 names_filter 进行过滤（若给定）。
-    """
+    """Find all *.tsp / *.tsp.gz under root and filter by names_filter if provided."""
     all_names = set()
     for fn in os.listdir(root):
         low = fn.lower()
@@ -263,6 +220,7 @@ def find_instances(root: str, names_filter: Optional[Iterable[str]] = None) -> L
                 if cand.lower() == nm_lower:
                     out.append(cand)
                     break
+
     seen = set()
     ordered = []
     for nm in out:
@@ -273,9 +231,7 @@ def find_instances(root: str, names_filter: Optional[Iterable[str]] = None) -> L
 
 
 def _load_tsplib_problem_from_root(root: str, name: str):
-    """
-    在 root 目录下，寻找 {name}.tsp 或 {name}.tsp.gz，解析为 tsplib95 problem。
-    """
+    """Find and parse {name}.tsp or {name}.tsp.gz under root."""
     candidates = [
         os.path.join(root, f"{name}.tsp"),
         os.path.join(root, f"{name}.tsp.gz"),
@@ -291,19 +247,6 @@ def _load_tsplib_problem_from_root(root: str, name: str):
     return load_tsplib_problem_from_text(text)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 def load_instances(
     root: str,
     solutions_file: Optional[str] = None,
@@ -311,12 +254,9 @@ def load_instances(
     min_nodes: int = 2,
     max_nodes: int = 999999,
 ) -> Tuple[List[str], List[np.ndarray], List[np.ndarray], np.ndarray]:
-    """
-    从 root 目录下按 names 读取一批 TSPLIB 实例，返回：
-        names, coords_list, distmats_list, opt_costs
-    若某个实例没有最优目标值信息（solutions 文件和 .opt.tour 都没有），则跳过。
+    """Load a batch of TSPLIB instances and return (names, coords, distmats, opt_costs).
 
-    这里增加了详细的 debug 输出，以便定位某个实例（例如 bayg29）为什么被跳过。
+    Instances without an optimal cost (neither solutions file nor .opt.tour) are skipped.
     """
     if not os.path.isdir(root):
         raise NotADirectoryError(f"TSPLIB root not found: {root}")
@@ -331,7 +271,6 @@ def load_instances(
     dist_list: List[np.ndarray] = []
     costs: List[float] = []
     kept_names: List[str] = []
-
 
     for nm in selected_names:
         try:
@@ -351,7 +290,6 @@ def load_instances(
             distmat = build_distance_matrix(prob)
 
             opt_cost = None
-
             if nm in sol_map:
                 opt_cost = float(sol_map[nm])
 

@@ -12,6 +12,7 @@ class DASH:
     @staticmethod
     def _flatten_any(x):
         out = []
+
         def push(z):
             if z is None:
                 return
@@ -20,6 +21,7 @@ class DASH:
             elif isinstance(z, (list, tuple)):
                 for w in z:
                     push(w)
+
         push(x)
         return out
 
@@ -80,23 +82,23 @@ class DASH:
         self.load_pop_path = paras.exp_continue_path
         self.load_pop_id = paras.exp_continue_id
 
-        # ---------------- 输出目录结构 ----------------
-        base_out = paras.exp_output_path  # 通常是 "./"
+        # ---------------- Output directory structure ----------------
+        base_out = paras.exp_output_path  # usually "./"
         prob_name = self.prob.__class__.__name__
         timestamp = time.strftime("%Y%m%d_%H%M%S")
 
-        # 允许外部指定整个 batch 共用的 run 名称（例如 "TSPGLS_20251207_161810"）
+        # Allow specifying a shared run name for the whole batch (e.g., "TSPGLS_20251207_161810")
         run_name = getattr(paras, "exp_run_name", None)
         if not run_name:
             run_name = f"{prob_name}_{timestamp}"
-            # 顺手写回 paras，方便 batch 里复用同一个 Paras 实例
+            # Write back to paras for reusing the same Paras instance in batch runs
             setattr(paras, "exp_run_name", run_name)
 
-        # run 根目录：.../results/<run_name>/
+        # Run root directory: .../results/<run_name>/
         self.output_root = os.path.join(base_out, "results", run_name)
 
-        # 对于单 case：直接用 case 名；
-        # 对于多实例问题：如果 problem.case_tag 存在，就用它；否则 fallback。
+        # For a single case: use case name directly.
+        # For multi-instance problems: use problem.case_tag if available; otherwise fallback.
         case_tag = getattr(self.prob, "case_tag", None)
         if not case_tag:
             inst_names = getattr(self.prob, "instance_names", None)
@@ -108,10 +110,10 @@ class DASH:
                 case_tag = "default"
         self.case_tag = case_tag
 
-        # 当前 case 的输出目录：.../results/<run_name>/<case_tag>/
+        # Current case output directory: .../results/<run_name>/<case_tag>/
         self.output_path = os.path.join(self.output_root, self.case_tag)
 
-        # 保持原有子目录结构（只是都挂在 case 目录下面）
+        # Keep the original subdirectory layout (all under the case directory)
         os.makedirs(os.path.join(self.output_path, "results", "pops"), exist_ok=True)
         os.makedirs(os.path.join(self.output_path, "results", "pops_best"), exist_ok=True)
         os.makedirs(os.path.join(self.output_path, "results", "history"), exist_ok=True)
@@ -129,7 +131,6 @@ class DASH:
         print(f"- Output path: {self.output_path} -")
         print(f"  (run_root={self.output_root}, case={self.case_tag})")
         random.seed(2024)
-
 
     def add2pop(self, population, offspring):
         flat = self._flatten_any(offspring)
@@ -162,11 +163,11 @@ class DASH:
             use_numba=self.use_numba,
             dialogue_path=self.dialogue_path,
             t_cfg=self.t_cfg,
-            # 关键：告诉 InterfaceEC 把导出文件写到当前 run 的目录下
+            # Key: tell InterfaceEC to write exported files under the current run directory
             output_dir=self.output_path,
         )
 
-        # ---------- 初始种群 ----------
+        # ---------- Initial population ----------
         population = []
         if self.load_pop:
             print("load initial population from " + self.load_pop_path)
@@ -192,7 +193,7 @@ class DASH:
                 json.dump(population, f, indent=4)
             n_start = 0
 
-        # 根据 InterfaceEC 里的定义，把算子划分为 MDL / MCL 两组
+        # Split operators into MDL / MCL based on InterfaceEC definitions
         mdl_ops = []
         mcl_ops = []
         if hasattr(interface_ec, "i_operators") and hasattr(interface_ec, "e_operators"):
@@ -208,7 +209,7 @@ class DASH:
             print(f"\n--- Generation {pop + 1} / {self.n_pop} ---")
             recent_valid_offs = []
 
-            # ---------- Phase 1: MDL（机制发现：i1/e1/e2 等） ----------
+            # ---------- Phase 1: MDL (Mechanism Discovery Layer: i1/e1/e2, etc.) ----------
             if n_mdl > 0:
                 print("--- Phase 1: MDL (Mechanism Discovery Layer: i/e operators) ---")
                 for i, op in enumerate(mdl_ops):
@@ -221,7 +222,7 @@ class DASH:
                         parents, offsprings = interface_ec.get_algorithm(
                         population,
                         op,
-                        gen_index=pop,  # 这里把 generation index 传下去（0-based）
+                        gen_index=pop,  # Pass generation index downstream (0-based)
                     )
                     _op_t1 = time.time()
                     op_elapsed = float(_op_t1 - _op_t0)
@@ -241,7 +242,7 @@ class DASH:
                     else:
                         print(" (no offspring)|", end="")
                     print()
-                    # MDL 阶段同样记录 history，operator 用原始名字
+                    # Record history for MDL as well; operator uses the original name
                     try:
                         hist_payload = {
                             "pop_index": pop + 1,
@@ -262,14 +263,14 @@ class DASH:
                     except Exception:
                         pass
 
-                # MDL 后先做一次 population_management 把种群裁回 pop_size
+                # After MDL, run population_management once to shrink population back to pop_size
                 population = self.manage.population_management(population, min(len(population), self.pop_size))
             else:
                 print("--- Phase 1: MDL skipped (no MDL operators configured) ---")
 
-            # ---------- Phase 2: SSL-1（在 MDL 产物上做一次轻量 T-phase） ----------
+            # ---------- Phase 2: SSL-1 (Lightweight T-phase on MDL outputs) ----------
             print("--- Phase 2: SSL-1 (Early Dynamics Shaping) ---")
-            # 为 SSL-1 构造有效候选集合
+            # Build a valid candidate set for SSL-1
             valid_pop = [
                 p
                 for p in population
@@ -290,7 +291,7 @@ class DASH:
                         f"> t_enable_gap_thres={self.t_enable_gap_thres:.6f}"
                     )
                 else:
-                    # 选出按 objective 排序的 top-k 精英作为 SSL-1 的 T 父代
+                    # Select top-k elites by objective as T parents for SSL-1
                     elite_sorted = sorted(valid_pop, key=lambda x: x['objective'])
                     t_parents = elite_sorted[: max(1, min(self.t_elite, len(elite_sorted)))]
 
@@ -366,7 +367,7 @@ class DASH:
                                 + "; ".join(t_parent_logs)
                             )
 
-            # ---------- Phase 3: MCL（机制压缩：m1/m2/m3 等） ----------
+            # ---------- Phase 3: MCL (Mechanism Consolidation Layer: m1/m2/m3, etc.) ----------
             if n_mcl > 0:
                 print("--- Phase 3: MCL (Mechanism Consolidation Layer: m operators) ---")
                 for j, op in enumerate(mcl_ops):
@@ -379,7 +380,7 @@ class DASH:
                         parents, offsprings = interface_ec.get_algorithm(
                         population,
                         op,
-                        gen_index=pop,  # 这里把 generation index 传下去（0-based）
+                        gen_index=pop,  # Pass generation index downstream (0-based)
                     )
                     _op_t1 = time.time()
                     op_elapsed = float(_op_t1 - _op_t0)
@@ -399,7 +400,7 @@ class DASH:
                     else:
                         print(" (no offspring)|", end="")
                     print()
-                    # MCL 阶段 history
+                    # History for MCL
                     try:
                         hist_payload = {
                             "pop_index": pop + 1,
@@ -420,12 +421,12 @@ class DASH:
                     except Exception:
                         pass
 
-                # MCL 后再裁剪一次
+                # After MCL, shrink again
                 population = self.manage.population_management(population, min(len(population), self.pop_size))
             else:
                 print("--- Phase 3: MCL skipped (no MCL operators configured) ---")
 
-            # ---------- Phase 4: SSL-2（沿用原有 T-phase 逻辑） ----------
+            # ---------- Phase 4: SSL-2 (Main T-phase: Structure & Efficiency) ----------
             print("--- Phase 4: SSL-2 (Main T-phase: Structure & Efficiency) ---")
             if self.t_cfg.get("verbose", True):
                 a = self.t_cfg["alpha"]
@@ -435,12 +436,12 @@ class DASH:
                 omax = self.t_cfg["Omax"]
                 print(f" [Thresholds] α={a} β_abs={b} γ_rel={gr} γ_abs={ga} Omax={omax}")
 
-            # 长期停滞时：直接跳过整个 SSL-2 T-phase（保留原逻辑）
+            # On prolonged stagnation: skip the whole SSL-2 T-phase (keep original logic)
             if self.stagnation_counter > 5:
                 print("  >> SSL-2 T-Phase skipped due to prolonged stagnation. Focusing on i/e/m phases.")
                 continue
 
-            # 为 SSL-2 构造有效候选集合
+            # Build a valid candidate set for SSL-2
             valid_pop = [
                 p
                 for p in population
@@ -455,14 +456,14 @@ class DASH:
                     for p in valid_pop
                 )
 
-                # 如果设置了启用阈值，则在 best_obj 较大时跳过 T-phase
+                # If an enable threshold is set, skip T-phase when best_obj is still large
                 if self.t_enable_gap_thres is not None and best_obj > self.t_enable_gap_thres:
                     print(
                         f"  >> SSL-2 disabled: best_obj={best_obj:.6f} "
                         f"> t_enable_gap_thres={self.t_enable_gap_thres:.6f}"
                     )
                 else:
-                    # 选出按 objective 排序的 top-k 精英作为 T 父代
+                    # Select top-k elites by objective as T parents
                     elite_sorted = sorted(valid_pop, key=lambda x: x['objective'])
                     t_parents = elite_sorted[: max(1, min(self.t_elite, len(elite_sorted)))]
 
@@ -485,7 +486,7 @@ class DASH:
                         t_res = interface_ec.run_t_pipeline_for_parent(
                             parent=parent,
                             pop_objs=pop_objs,
-                            gen_index=pop + 1,   # 把当前代数传入 T 阶段，用于记忆
+                            gen_index=pop + 1,   # Pass current generation index to T-phase for memory
                             ssl_stage="dsl2",
                         )
                         if not t_res:
@@ -540,7 +541,7 @@ class DASH:
                                 + "; ".join(t_parent_logs)
                             )
 
-            # ---------- 保存种群 ----------
+            # ---------- Save population ----------
             filename = os.path.join(
                 self.output_path,
                 "results",
@@ -559,7 +560,7 @@ class DASH:
                 with open(filename_best, 'w') as f:
                     json.dump(population[0], f, indent=4)
 
-            # ---------- 汇总打印（每个个体：gap + eval_time） ----------
+            # ---------- Summary print (per individual: gap + eval_time) ----------
             pop_summaries = []
             for ind in population:
                 obj = ind.get('objective')
@@ -577,20 +578,16 @@ class DASH:
         # ---------- After all generations: dump summary & export global top-K ----------
         total_time_sec = time.time() - time_start
 
-        # 先写当前 case 的 summary.csv
+        # First write summary.csv for the current case
         try:
             self._dump_run_summary(interface_ec, total_time_sec)
         except Exception as e:
             if self.debug_mode:
                 print(f"[WARN] Failed to dump run summary: {e}")
 
-        # 再导出 global top-k solver
+        # Then export global top-k solvers
         try:
             interface_ec.export_topk_individuals(tag="global_topk")
         except Exception as e:
             if self.debug_mode:
                 print(f"[WARN] Failed to export global top-k solutions: {e}")
-
-
-# Backward compatibility (legacy name)
-EOH = DASH

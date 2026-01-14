@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Batch runner for DASH + TSPGLS (TSPLIB).
-
-This script is optional. It shows how to run DASH on a list of TSPLIB instances
-using the TSPGLS plugin.
-
-Notes:
-- It expects your DASH framework package to be importable from repo root (src/).
-- LLM credentials are read from environment variables:
-    DASH_LLM_API_ENDPOINT, DASH_LLM_API_KEY, DASH_LLM_MODEL
-"""
 
 from __future__ import annotations
 

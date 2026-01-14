@@ -115,14 +115,13 @@ def main():
         "clip_quantile": float(args.clip_q),
         "seconds": float(t1 - t0),
         "format_version": 1,
-        # loader 友好提示
         "instances_shape": tuple(instances.shape),
         "instances_dtype": str(instances.dtype),
     }
 
     payload = {
         "meta": meta,
-        "instances": instances,  # <-- 每个 instance 是 instances[i], 1D array
+        "instances": instances, 
     }
 
     with open(out_path, "wb") as f:

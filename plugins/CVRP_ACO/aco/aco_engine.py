@@ -9,12 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 try:
-    from ..utils.utils import routes_cost, edges_from_routes
+    from utils.utils import routes_cost, edges_from_routes
 except ImportError:  # pragma: no cover
     from ..utils.utils import routes_cost, edges_from_routes
 
-from .spec import ACOSpec
-from .aco_operators import (
+from aco.spec import ACOSpec
+from aco.aco_operators import (
     vnd_local_search,
     clarke_wright_savings_init,
     destroy_random,
@@ -314,7 +314,7 @@ def alns_improve(
             accepted = (cost_new <= cost_cur)
         elif spec.alns.accept == "rrt":
             eps = float(spec.alns.rrt_epsilon) + (float(spec.alns.rrt_final_epsilon) - float(spec.alns.rrt_epsilon)) * prog
-            # ✅ 修复：这里应当用 best_cost_global
+            # NOTE: RRT acceptance should compare against the global best cost.
             accepted = _accept_rrt(cost_new, best_cost_global, eps)
         else:  # "sa"
             Tcur = T0 * (float(spec.alns.sa_alpha) ** (1000.0 * prog))

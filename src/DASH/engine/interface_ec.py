@@ -10,7 +10,7 @@ import os
 import traceback
 import signal
 import multiprocessing as mp
-from datetime import datetime  # NEW: for export timestamp
+from datetime import datetime
 import hashlib
 
 
@@ -23,20 +23,19 @@ class InterfaceEC:
         prompts = interface_prob.prompts
         dialogue_path = kwargs.pop("dialogue_path", None)
 
-        # ---- T thresholds / switches（先初始化，方便传给 Evolution）
+        # ---- T thresholds / switches (initialize first for passing into Evolution)
         self.t_cfg = kwargs.get("t_cfg", {}) or {}
         self.t_cfg.setdefault("alpha", {"t1": 0.20, "t2": 0.10, "t3": 0.05})
         self.t_cfg.setdefault("beta_abs", {"t1": 1.0, "t2": 0.8, "t3": 0.5})
         self.t_cfg.setdefault("gamma_rel", 0.10)
         self.t_cfg.setdefault("gamma_abs", 0.5)
         self.t_cfg.setdefault("Omax", 20.0)
-        self.t_cfg.setdefault("bypass_on_fail", True)   # 确保默认 True
+        self.t_cfg.setdefault("bypass_on_fail", True)   # ensure default True
         self.t_cfg.setdefault("diag_retry", False)
         self.t_cfg.setdefault("verbose", True)
-        # 新增：T 阶段 history 控制
+        # NEW: T-stage history controls
         self.t_cfg.setdefault("t_history_maxlen", 5)
         self.t_cfg.setdefault("t_history_in_prompt", True)
-
 
         # ---- Operator naming (DASH) ----
         # Implementation operators are Evolution method names; alias names are used in configs/logging.
@@ -98,42 +97,41 @@ class InterfaceEC:
         self.n_p = n_p
         self.timeout = timeout
         self.use_numba = use_numba
-        # GLS t（同骨架）
+        # GLS T-operators (same skeleton)
         self.t_operators_gls = ['t1_gls_structure', 't2_gls_param', 't3_gls_module']
 
-        # 记录 T 阶段最近一次 ACCEPT 的个体（用于“bypass”）
+        # Track the most recent ACCEPTed individual in T-phase (for "bypass")
         self._last_t_accept = None
 
-        # 输出目录，用于导出最终 accepted GLS solver / global top-k
+        # Output directory for exporting final accepted GLS solver / global top-k
         self.output_dir = kwargs.get("output_dir", None)
         if self.output_dir:
-            # 先创建一个基础目录，后面 _persist_t_accept 还会细分到 results/exports
+            # Create base directory; _persist_t_accept will further create results/exports
             os.makedirs(self.output_dir, exist_ok=True)
 
         # Global top-K archive (for final export across all generations)
         self.topk_archive = []
-        # 关键：top-k 个数 = ec_pop_size
+        # Key: top-k size = ec_pop_size
         self.topk_size = pop_size
-
 
     # ---------------- logging ----------------
     def log_print(self, content, *args, **kwargs):
         print(content, *args, **kwargs)
 
-    # ---------------- baseline 种子构造 ----------------
+    # ---------------- baseline seed construction ----------------
     def _build_baseline_seed(self):
         """
-        构造一个“强 baseline 种子”个体：
+        Build a "strong baseline seed" individual:
 
-        - 使用与 test_gls_engine_perturb_grid 中 3.2_basic_reloc 相同的 BuiltinGLS 语义：
+        - Use the same BuiltinGLS semantics as in test_gls_engine_perturb_grid 3.2_basic_reloc:
             D' = D + (lam * avg_edge_len) * penalty, lam=0.5
-        - 骨架参数对齐你网格中最优配置：
+        - Align skeleton parameters to the best config from the grid:
             k=45, random_relocate, loop_max=400, max_no_improve=80, time_limit_s=10
         """
 
-        # 这里不实现 update_edge_distance，只在模块级定义 lam：
-        # guided_local_search 里只要发现 guide_algorithm 有 lam 属性，
-        # 就会走 BuiltinGLS 分支，忽略 update_edge_distance 本身。
+        # We do not implement update_edge_distance here; only define lam at module level:
+        # guided_local_search will switch to BuiltinGLS mode whenever the guide_algorithm
+        # object has attribute `lam`, ignoring update_edge_distance itself.
         code = (
             "# Builtin GLS baseline: lam is the alpha scaling factor\n"
             "# guided_local_search will run in builtin GLS mode whenever\n"
@@ -147,71 +145,66 @@ class InterfaceEC:
             "loop_max=400, max_no_improve=80, time_limit_s=10.0"
         )
 
-        # 用框架统一的构造函数，自动带上 gls_spec 等字段
+        # Use the unified constructor; it will attach fields like gls_spec
         ind = self._build_individual(code, algorithm)
 
-        # 再显式把 gls_spec 调到你网格里的 best config 附近
+        # Explicitly tune gls_spec close to the best config in the grid
         spec = ind.get("gls_spec") or self._default_gls_spec()
 
-        # init：多起点 = 1
+        # init: multi_start = 1
         spec.setdefault("init", {})
         spec["init"].setdefault("method", "nearest_neighbor")
         spec["init"].setdefault("start", 0)
         spec["init"]["multi_start"] = 1
 
-        # candset：k=45（你 3.2_basic_reloc 的 sweet spot）
+        # candset: k=45 (sweet spot in 3.2_basic_reloc)
         spec.setdefault("candset", {})
         spec["candset"]["type"] = "kNN"
         spec["candset"]["k"] = 45
 
-        # schedule：loop_max=400, max_no_improve=80
+        # schedule: loop_max=400, max_no_improve=80
         spec.setdefault("schedule", {})
         spec["schedule"]["loop_max"] = 400
         spec["schedule"]["max_no_improve"] = 80
 
-        # perturb：random_relocate + moves=1, interval=80
+        # perturb: random_relocate + moves=1, interval=80
         spec.setdefault("perturb", {})
         spec["perturb"]["type"] = "random_relocate"
         spec["perturb"]["moves"] = 1
         spec["perturb"]["interval"] = 80
 
-        # guidance：标记成 builtin（虽然后端只看 lam 属性，但标一标更直观）
+        # guidance: mark as builtin for clarity (backend uses lam attribute)
         spec.setdefault("guidance", {})
         spec["guidance"]["where"] = "mid_ls"
         spec["guidance"]["weight"] = 1.0
         spec["guidance"]["top_k"] = 6
         spec["guidance"]["type"] = "builtin"
 
-        # stopping：10 秒（与你 grid 里的 time_limit_s 一致）
+        # stopping: 10 seconds (align with time_limit_s in grid)
         spec.setdefault("stopping", {})
         spec["stopping"]["time_limit_s"] = 10.0
 
-        # engine：ls_basic（当前骨架只实现 basic，引擎字段主要用于未来扩展）
+        # engine: ls_basic (current skeleton only implements basic; engine field is for future extension)
         spec.setdefault("engine", {})
         spec["engine"]["type"] = "ls_basic"
 
         ind["gls_spec"] = spec
         return ind
 
-
-
-
-    # # ---------------- i阶 ----------------
-
-
-    # ---------------- i阶 ----------------
+    # ---------------- i-phase ----------------
     def population_generation(self):
         """
-        新策略：i 阶段只保留一个强 baseline。
-        - 用 _build_baseline_seed() 构造 baseline；
-        - 评估一次 baseline；
-        - 把 baseline 克隆成 pop_size 份作为初始种群。
-        这样首个 MDL-e 阶段 (e1/e2) 的所有父代都是同一个 baseline。
+        New strategy: keep only one strong baseline in i-phase.
+        - Build a baseline via _build_baseline_seed();
+        - Evaluate the baseline once;
+        - Clone the baseline into pop_size individuals as the initial population.
+
+        This ensures that in the first MDL-e phase (e1/e2), all parents are the same baseline.
         """
         self.log_print("creating initial population (baseline-only i-phase):")
         pop = []
 
-        # 1) 构造 baseline 种子
+        # 1) Build the baseline seed
         baseline = None
         try:
             baseline = self._build_baseline_seed()
@@ -219,7 +212,7 @@ class InterfaceEC:
             if self.debug:
                 print(f"[WARN] Failed to build baseline seed: {e}")
 
-        # 2) 如果 baseline 构造失败，就回退到旧逻辑（用 i1 生成），防止整个流程崩掉
+        # 2) If baseline construction fails, fallback to legacy logic (generate via i1)
         if baseline is None:
             if self.debug:
                 print("[WARN] baseline seed is None, fallback to LLM i1 generation.")
@@ -231,7 +224,7 @@ class InterfaceEC:
             self.log_print("initial population has been created! (fallback i1)")
             return pop
 
-        # 3) 评估 baseline（走统一 _evaluate_individual 路径，兼容 GLS spec）
+        # 3) Evaluate the baseline (unified _evaluate_individual path, compatible with GLS spec)
         try:
             res, eval_time = self._evaluate_individual(baseline)
             baseline["objective"] = res.get("fitness", 1e10)
@@ -240,7 +233,7 @@ class InterfaceEC:
         except Exception as e:
             if self.debug:
                 print(f"[WARN] Failed to evaluate baseline seed: {e}")
-            # 评估失败同样回退到旧逻辑
+            # If evaluation fails, also fallback to legacy logic
             for _ in range(self.pop_size):
                 parents, offsprings = self.get_offspring([], 'i1')
                 if offsprings:
@@ -249,9 +242,9 @@ class InterfaceEC:
             self.log_print("initial population has been created! (fallback i1)")
             return pop
 
-        # 4) baseline 评估成功：克隆出 pop_size 份，作为初始种群
+        # 4) Baseline evaluation succeeded: clone pop_size copies as initial population
         for _ in range(self.pop_size):
-            # 做一个浅拷贝，避免共享 same dict 引用（后面写 history 时不会互相干扰）
+            # Shallow copy to avoid sharing the same dict reference (history won't interfere)
             ind = {
                 "code": baseline.get("code"),
                 "algorithm": baseline.get("algorithm"),
@@ -263,57 +256,19 @@ class InterfaceEC:
             }
             pop.append(ind)
 
-        # 截断到 pop_size（理论上已经刚好等于 pop_size，这里只是防御性代码）
+        # Defensive truncation (should already be exactly pop_size)
         if len(pop) > self.pop_size:
             pop = pop[: self.pop_size]
 
         self.log_print("initial population has been created! (baseline only)")
         return pop
 
-
-    # ---------------- i阶 ----------------
-
-    #     # 1) 先用 i1 正常让 LLM 生成一批个体
-    #     for _ in range(self.pop_size):
-    #         parents, offsprings = self.get_offspring([], 'i1')
-    #         if offsprings:
-    #             pop.extend(offsprings)
-
-    #     # 2) 注入 baseline 种子（BuiltinGLS + k=45, random_relocate, tl=10）
-    #     baseline = None
-    #     try:
-    #         baseline = self._build_baseline_seed()
-    #     except Exception as e:
-    #         if self.debug:
-    #             print(f"[WARN] Failed to build baseline seed: {e}")
-
-    #     if baseline is not None:
-    #         try:
-    #             # 用统一评估流程评估 baseline（会走 gls_spec 路径）
-    #             res, eval_time = self._evaluate_individual(baseline)
-    #             baseline["objective"] = res.get("fitness", 1e10)
-    #             baseline["other_inf"] = res.get("meta", {})
-    #             baseline["eval_time"] = eval_time
-    #             pop.append(baseline)
-    #         except Exception as e:
-    #             if self.debug:
-    #                 print(f"[WARN] Failed to evaluate baseline seed: {e}")
-
-    #     # 3) 若个体数超过 pop_size，则按 objective 从小到大截断
-    #     if len(pop) > self.pop_size:
-    #         pop = sorted(pop, key=lambda x: x.get("objective", 1e10))[: self.pop_size]
-
-    #     self.log_print("initial population has been created!")
-    #     return pop
-
-
-
-    # ---------------- i/e/m & 路由 ----------------
+    # ---------------- i/e/m & routing ----------------
     def get_algorithm(self, pop, operator, **kwargs):
-        """兼容 DASH 框架调用，并保留 exp_n_proc 的并行行为。"""
+        """Compatible with DASH operator calls and keeps exp_n_proc parallel behavior."""
         results = []
         try:
-            # 这里的 self.n_p 就是你配置里的 exp_n_proc
+            # self.n_p corresponds to exp_n_proc in config
             results = Parallel(n_jobs=self.n_p)(
                 delayed(self.get_offspring)(pop, operator, **kwargs)
                 for _ in range(self.pop_size)
@@ -333,15 +288,15 @@ class InterfaceEC:
 
     def _update_topk_archive(self, individual, fitness, eval_time, meta):
         """
-        维护一个全局 top-K 档案，用于在整个演化结束后导出若干最佳个体。
-        按 fitness 从小到大排序，仅保留 self.topk_size 个。
+        Maintain a global top-K archive for exporting the best individuals after evolution.
+        Sort by fitness ascending and keep only self.topk_size entries.
         """
         try:
             fitness = float(fitness)
         except Exception:
             return
 
-        # 过滤掉明显无效的解
+        # Filter out obviously invalid solutions
         if not (0 <= fitness < 1e9):
             return
 
@@ -349,7 +304,7 @@ class InterfaceEC:
         gls_spec = individual.get("gls_spec")
         dag_spec = individual.get("dag_spec")
 
-        # gls_spec / dag_spec 可能包含不可 JSON 序列化的对象，因此这里兜底
+        # gls_spec / dag_spec may contain non-JSON-serializable objects; fallback safely
         try:
             gls_key = json.dumps(gls_spec, sort_keys=True, ensure_ascii=False) if gls_spec is not None else None
         except TypeError:
@@ -362,7 +317,7 @@ class InterfaceEC:
 
         key = (self._normalize_code_for_topk(code), gls_key, dag_key)
 
-        # 如果已经在档案里，则只在更优时更新
+        # If already in archive, update only if better
         for entry in getattr(self, "topk_archive", []):
             if entry.get("key") == key:
                 if fitness < entry.get("fitness", 1e10):
@@ -388,16 +343,15 @@ class InterfaceEC:
 
     @staticmethod
     def _normalize_code_for_topk(code):
-        """用于 top-K 去重的轻量级 code 归一化（去空白）."""
+        """Lightweight code normalization for top-K deduplication (strip whitespace)."""
         if not isinstance(code, str):
             return ""
         return re.sub(r"\s+", "", code)
 
     def export_topk_individuals(self, tag="global_topk"):
         """
-        把全局 top-K 个体导出到 results/exports/ 目录。
-        每个个体会复用 T 阶段的 _persist_t_accept 导出逻辑，
-        区别仅在于 path_tags 和 success_count 的标记。
+        Export global top-K individuals to results/exports/.
+        Each individual reuses _persist_t_accept export logic; only tags differ.
         """
         if not self.output_dir:
             return
@@ -415,19 +369,17 @@ class InterfaceEC:
             path_tags = [tag, f"rank_{rank}"]
             self._persist_t_accept(indiv, attempt, success, path_tags=path_tags)
 
-
-
     def _evaluate_individual(self, individual):
         """
-        调用本地问题接口进行评估，带“硬超时”：
-        - 只限制 evaluate() 的执行时间，不限制 LLM 生成时间；
-        - 一旦超过 self.timeout 秒，立即抛出异常，中断评估，
-          返回 fitness = 1e10, meta["timeout"]=True。
+        Evaluate via the local problem interface with a "hard timeout":
+        - Only limits evaluate() runtime (not LLM generation time).
+        - If exceeding self.timeout seconds, raise an exception and stop evaluation,
+          returning fitness=1e10 and meta["timeout"]=True.
         """
         start_time = time.time()
         result = {"fitness": 1e10, "meta": {}}
 
-        # 如果没设 timeout 或者 <=0，就走无超时旧逻辑
+        # If timeout is not set or <= 0, use the legacy no-timeout path
         if not self.timeout or self.timeout <= 0:
             try:
                 res = self.interface_eval.evaluate(individual)
@@ -441,7 +393,7 @@ class InterfaceEC:
                 result["meta"] = {"error_eval": str(e)}
             eval_time = time.time() - start_time
 
-            # 更新全局 top-K 档案
+            # Update global top-K archive
             try:
                 self._update_topk_archive(
                     individual,
@@ -455,8 +407,8 @@ class InterfaceEC:
 
             return result, eval_time
 
-        # ---------------- 带硬超时的路径 ----------------
-        # 使用 signal.SIGALRM 实现硬超时
+        # ---------------- Hard-timeout path ----------------
+        # Use signal.SIGALRM to implement hard timeout
         def _timeout_handler(signum, frame):
             raise TimeoutError("Evaluation timeout")
 
@@ -464,7 +416,7 @@ class InterfaceEC:
         try:
             signal.signal(signal.SIGALRM, _timeout_handler)
         except Exception:
-            # 某些环境（例如 Windows）可能不支持 SIGALRM，此时退化为无超时模式
+            # Some environments (e.g., Windows) may not support SIGALRM; degrade to no-timeout
             try:
                 res = self.interface_eval.evaluate(individual)
                 if isinstance(res, dict):
@@ -491,7 +443,7 @@ class InterfaceEC:
             return result, eval_time
 
         try:
-            # 启动计时器
+            # Start timer
             signal.setitimer(signal.ITIMER_REAL, float(self.timeout))
 
             try:
@@ -508,7 +460,7 @@ class InterfaceEC:
                 result["fitness"] = 1e10
                 result["meta"] = {"error_eval": str(e)}
         finally:
-            # 关闭计时器 & 恢复旧 handler
+            # Stop timer & restore old handler
             try:
                 signal.setitimer(signal.ITIMER_REAL, 0)
             except Exception:
@@ -520,7 +472,7 @@ class InterfaceEC:
 
         eval_time = time.time() - start_time
 
-        # 更新全局 top-K 档案（按 fitness 从小到大保留前 self.topk_size 个）
+        # Update global top-K archive (keep best self.topk_size)
         try:
             self._update_topk_archive(
                 individual,
@@ -534,14 +486,13 @@ class InterfaceEC:
 
         return result, eval_time
 
-
     def _evaluate_with_timeout(self, individual, timeout=None):
-        """兼容旧 T-phase 代码的接口。"""
+        """Compatibility wrapper for older T-phase code."""
         return self._evaluate_individual(individual)
 
     @staticmethod
     def _is_same_code(code_a, code_b):
-        """粗略判断代码是否相同（去掉空白后比较）。"""
+        """Rough check for code equivalence (compare after stripping whitespace)."""
         if not code_a or not code_b:
             return False
         strip_a = re.sub(r'\s+', '', code_a)
@@ -549,7 +500,7 @@ class InterfaceEC:
         return strip_a == strip_b
 
     def check_duplicate(self, new_individual, pop):
-        """检查新个体是否在当前种群中“等价”."""
+        """Check whether a new individual is "equivalent" to one in the current population."""
         code = new_individual.get('code', '')
         gls_spec = new_individual.get('gls_spec')
         dag_spec = new_individual.get('dag_spec')
@@ -559,7 +510,7 @@ class InterfaceEC:
                 continue
             if not self._is_same_code(code, ind['code']):
                 continue
-            # code 相同，进一步比较 gls_spec/dag_spec
+            # Same code, further compare gls_spec/dag_spec
             same_gls = (gls_spec is None and ind.get('gls_spec') is None) or \
                        (gls_spec is not None and ind.get('gls_spec') is not None and
                         json.dumps(gls_spec, sort_keys=True) ==
@@ -572,12 +523,11 @@ class InterfaceEC:
                 return True
         return False
 
-    # ---------------- i/e/m offspring 生成 ----------------
+    # ---------------- i/e/m offspring generation ----------------
     def _to_impl_operator(self, operator: str) -> str:
         """Translate user-facing operator name to internal implementation operator."""
         return self._op_alias_to_impl.get(operator, operator)
 
-    # ---------------- i/e/m offspring 生成 ----------------
     def get_offspring(self, pop, operator, **kwargs):
         """Unified entry: dispatch to legacy i/MDL/MCL operators or SSL(T)-operators."""
         impl_op = self._to_impl_operator(operator)
@@ -617,7 +567,7 @@ class InterfaceEC:
         return code, algorithm
 
     def _build_individual(self, code, algorithm, base=None):
-        """从 code + algorithm 构造个体字典，兼顾复用已有字段。"""
+        """Build an individual dict from (code, algorithm), optionally reusing existing fields."""
         ind = {
             'code': code,
             'algorithm': algorithm,
@@ -628,14 +578,14 @@ class InterfaceEC:
             'eval_time': None
         }
         if base:
-            # 例如 t 阶段需要继承旧个体的一些元信息
+            # For example, T-phase may inherit some metadata from the parent
             for k in ['gls_spec', 'dag_spec', 'other_inf']:
                 if k in base and base[k] is not None:
                     ind[k] = base[k]
         return ind
 
     def _get_offspring_legacy(self, pop, operator, operator_alias=None, **kwargs):
-        """i/e/m 阶段：沿用原有 GLS 评估路径（无 DAG），并记录 EM LDR。"""
+        """i/e/m phases: keep the original GLS evaluation path (no DAG) and record EM LDR."""
         parents = self._sample_parents(pop, operator)
         if operator != 'i1' and not parents:
             return [], []
@@ -657,7 +607,7 @@ class InterfaceEC:
             }]
 
         cleaned = code.strip()
-        # 简单检查是否包含至少一个函数定义
+        # Basic check: must contain at least one function definition
         if not re.search(r'^\s*def\s+\w+\s*\(.*\)\s*:', cleaned, flags=re.MULTILINE):
             return parents, [{
                 'objective': 1e10,
@@ -667,7 +617,7 @@ class InterfaceEC:
         base = parents[0] if parents else None
         new_ind = self._build_individual(cleaned, algorithm, base=base)
 
-        # 重复个体直接丢弃（objective 置为大数）
+        # Drop duplicates (set objective to a large number)
         if self.check_duplicate(new_ind, pop):
             if "other_inf" not in new_ind or not isinstance(new_ind["other_inf"], dict):
                 new_ind["other_inf"] = {}
@@ -675,13 +625,13 @@ class InterfaceEC:
             new_ind['objective'] = 1e10
             return parents, [new_ind]
 
-        # 评估
+        # Evaluate
         res, eval_time = self._evaluate_individual(new_ind)
         new_ind['objective'] = res.get('fitness', 1e10)
         new_ind['other_inf'] = res.get('meta', {})
         new_ind['eval_time'] = eval_time
 
-        # 记录 EM LDR（仅在 base/new_ind 都是 dict 时生效）
+        # Record EM LDR (only works when both base/new_ind are dicts)
         try:
             gen_index = kwargs.get("gen_index", None)
             if isinstance(base, dict) and isinstance(new_ind, dict):
@@ -692,18 +642,16 @@ class InterfaceEC:
 
         return parents, [new_ind]
 
-
-    # ---------------- GLS T-phase offspring 生成 ----------------
+    # ---------------- GLS T-phase offspring generation ----------------
     def _supports_gls_spec(self):
-        """当前问题是否支持 GLSSpec 评估（t 阶段）"""
+        """Whether the current problem supports GLSSpec evaluation (T-phase)."""
         return hasattr(self.interface_eval, "evaluateGLS_with_spec")
-
 
     def _default_gls_spec(self):
         """
-        如果 parent 还没有 gls_spec，就用一份合理的默认配置。
-        注意要与 eoh_evolution.Evolution._default_gls_spec_dict
-        以及 zTSP/gls/spec.py 中的 GLSSpec 默认保持一致。
+        If parent does not have gls_spec, use a reasonable default config.
+        Note: keep consistent with eoh_evolution.Evolution._default_gls_spec_dict
+        and GLSSpec defaults in zTSP/gls/spec.py.
         """
         return {
             "init": {"method": "nearest_neighbor", "start": 0, "multi_start": 1},
@@ -711,7 +659,7 @@ class InterfaceEC:
             "operators": [
                 {"name": "two_opt", "strategy": "first"},
                 {"name": "relocate", "strategy": "first"},
-                # 这里先不显式写 or_opt2，底层骨架会处理
+                # Do not explicitly include or_opt2 here; the underlying skeleton will handle it
             ],
             "schedule": {
                 "loop_max": 400,
@@ -730,9 +678,8 @@ class InterfaceEC:
                 "type": "llm",
             },
             "stopping": {"time_limit_s": 10.0},
-            # engine 字段不写也可以，from_json 会用 GLSSpec 默认的 ls_basic
+            # engine can be omitted; from_json will use GLSSpec default ls_basic
         }
-
 
     def _get_offspring_gls(self, pop, operator, **kwargs):
         seed_pool = kwargs.get("seed_pool", None)
@@ -759,10 +706,10 @@ class InterfaceEC:
         new_ind['gls_spec'] = spec
         return parents, [new_ind]
 
-    # ---------------- GLS T-phase 评估与接受策略 ----------------
+    # ---------------- GLS T-phase evaluation & acceptance ----------------
     def _choose_t_parent(self, pop, seed_pool=None):
         """
-        保持与旧版本兼容的父代选择函数（仍用于 _get_offspring_gls）。
+        Parent selection function kept for backward compatibility (still used in _get_offspring_gls).
         """
         def _is_valid(ind):
             obj = ind.get('objective')
@@ -781,7 +728,7 @@ class InterfaceEC:
         return [min(with_t, key=lambda x: x['eval_time'])] if with_t else [top[0]]
 
     def _accept_new(self, obj_c, time_c, best_obj, fastest_time, phase_tag: str, meta=None):
-        # 旧的“相对全局 best/fastest” 接受逻辑，保留以兼容历史代码（当前不在新框架中使用）
+        # Legacy "relative to global best/fastest" acceptance logic kept for historical compatibility
         if best_obj is None or fastest_time is None:
             return False, "no_baseline"
 
@@ -795,11 +742,11 @@ class InterfaceEC:
             if "timeout" in err or "emit" in err or "exception" in err:
                 return False, f"error:{err}"
 
-        alpha     = self.t_cfg["alpha"].get(phase_tag, 0.0)     # 速度门槛
-        beta_abs  = self.t_cfg["beta_abs"].get(phase_tag, 0.0)  # 速度赢时允许的质量变差
-        gamma_rel = self.t_cfg["gamma_rel"]                     # 质量相对门槛
-        gamma_abs = self.t_cfg["gamma_abs"]                     # 质量绝对门槛
-        Omax      = self.t_cfg["Omax"]                          # 质量上限
+        alpha     = self.t_cfg["alpha"].get(phase_tag, 0.0)     # speed threshold
+        beta_abs  = self.t_cfg["beta_abs"].get(phase_tag, 0.0)  # allowed quality degradation when speed wins
+        gamma_rel = self.t_cfg["gamma_rel"]                     # relative quality threshold
+        gamma_abs = self.t_cfg["gamma_abs"]                     # absolute quality threshold
+        Omax      = self.t_cfg["Omax"]                          # quality upper bound
 
         if obj_c > Omax:
             return False, f"quality_over_Omax({Omax})"
@@ -813,44 +760,43 @@ class InterfaceEC:
 
         return False, "no_improve"
 
-
-
     def _accept_new_parent(self, obj_c, time_c, obj_p, time_p, phase_tag: str, meta=None):
         """
-        新的 T 阶段**局部**接受准则（LDR 版）：
-        - 针对“某一步 T 操作（t1/t2/t3）”以及它的 parent 做两两比较；
-        - 做全局质量护栏；
-        - 若无时间信息，退化为纯质量比较；
-        - 有时间时按阶段 (t1/t2/t3) 基于 LDR + 质量/时间约束决策。
-        注意：
-        - 是否真正把某个候选作为“这一代的最终 parent”，由 run_t_pipeline_for_parent
-        的“全局最终决策”（含时间单调约束）来控制，这里只做局部筛选。
+        New T-phase *local* acceptance criterion (LDR-based):
+        - Compare candidate against its parent for a specific T-operator (t1/t2/t3).
+        - Enforce a global quality guardrail.
+        - If timing info is missing, fall back to pure quality comparison.
+        - With timing info, decide using stage-specific rules based on LDR + constraints.
+
+        Note:
+        - The final decision (including monotonic time constraint) is handled in
+          run_t_pipeline_for_parent; this function only performs local filtering.
         """
-        # 基本合法性检查
+        # Basic validity checks
         if obj_c is None or obj_c >= 1e9:
             return False, "invalid_candidate"
 
-        # 全局质量护栏：过于糟糕的解直接拒绝
+        # Global quality guardrail: reject overly bad solutions
         Omax = float(self.t_cfg.get("Omax", 20.0))
         if obj_c > Omax:
             return False, f"quality_over_Omax({Omax})"
 
-        # 若父代缺失，退化为无信息
+        # If parent is missing, treat as invalid
         if obj_p is None or obj_p >= 1e9:
             return False, "invalid_parent"
 
-        # 拿出通用阈值
+        # Shared thresholds
         gamma_rel = float(self.t_cfg.get("gamma_rel", 0.10))
         gamma_abs = float(self.t_cfg.get("gamma_abs", 0.5))
 
-        # 若没有时间信息，则退化为纯质量规则
+        # If timing info is missing, fall back to pure quality rule
         if time_p is None or time_c is None or time_p <= 0.0 or time_c <= 0.0:
             thr = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
             if obj_c <= thr:
                 return True, "quality_win(no_time)"
             return False, "no_improve(no_time)"
 
-        # 有时间和 gap，计算 LDR 指标
+        # With time and gap, compute LDR metrics
         ldr = self._compute_ldr_fields(obj_p, obj_c, time_p, time_c)
         iLDR = float(ldr.get("ldr_i", 0.0))
         tLDR_delta = float(ldr.get("ldr_t", 0.0))
@@ -869,25 +815,24 @@ class InterfaceEC:
             tLDR = float(tLDR_traj)
             tLDR_source = "traj"
 
-
-        # 速度提升（正数表示更快）
+        # Speed gain (positive means faster)
         speed_gain = (time_p - time_c) / max(time_p, 1e-9)
         rel_regret = (obj_c - obj_p) / max(obj_p, 1e-9)
 
-        # 质量安全阈
+        # Quality safety threshold
         thr_quality = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
 
-        # --------- t1: 结构级（质量 + 动力学折中） ---------
+        # --------- t1: structure-level (quality + dynamics trade-off) ---------
         if phase_tag == "t1":
-            # 质量直观提升，直接接受
+            # Direct quality improvement -> accept
             if obj_c <= thr_quality:
                 return True, f"quality_win(iLDR={iLDR:.3f}, tLDR_{tLDR_source}={tLDR:.3f})"
 
-            # 允许一定 regret 换动力学提升
+            # Allow limited regret in exchange for dynamics improvement
             max_rel_regret = float(self.t_cfg.get("t1_max_rel_regret", gamma_rel))
             min_score = float(self.t_cfg.get("t1_min_ldr_score", 0.0))
-            alpha = float(self.t_cfg.get("t1_ldr_alpha", 1.0))   # tLDR 权重
-            beta = float(self.t_cfg.get("t1_ldr_beta", 1.0))     # iLDR 权重
+            alpha = float(self.t_cfg.get("t1_ldr_alpha", 1.0))   # tLDR weight
+            beta = float(self.t_cfg.get("t1_ldr_beta", 1.0))     # iLDR weight
             score = alpha * tLDR + beta * iLDR
 
             if rel_regret <= max_rel_regret and score >= min_score:
@@ -895,15 +840,15 @@ class InterfaceEC:
 
             return False, "no_improve"
 
-        # --------- t2: 时间 shrinker（效率优先） ---------
+        # --------- t2: time shrinker (efficiency-first) ---------
         if phase_tag == "t2":
-            # 若 gap 明显变好，也可以接受
+            # If gap improves significantly, accept
             if obj_c <= thr_quality:
                 return True, f"quality_win(iLDR={iLDR:.3f}, tLDR_{tLDR_source}={tLDR:.3f})"
 
-            # 否则要求：时间明显缩短 + tLDR > 0 + 质量退化有限
-            min_speed_gain = float(self.t_cfg.get("t2_min_speed_gain", 0.05))   # 至少 5% 提速
-            max_rel_regret = float(self.t_cfg.get("t2_max_rel_regret", 0.02))   # gap 最多坏 2%
+            # Otherwise require: clear time reduction + tLDR > 0 + limited quality degradation
+            min_speed_gain = float(self.t_cfg.get("t2_min_speed_gain", 0.05))   # at least 5% speedup
+            max_rel_regret = float(self.t_cfg.get("t2_max_rel_regret", 0.02))   # at most 2% gap worse
 
             if speed_gain >= min_speed_gain and tLDR > 0.0 and rel_regret <= max_rel_regret:
                 return True, (
@@ -913,161 +858,39 @@ class InterfaceEC:
 
             return False, "no_improve"
 
-        # --------- t3: 质量抛光（少量时间换较大质量提升） ---------
+        # --------- t3: quality polishing (trade some time for larger quality gain) ---------
         if phase_tag == "t3":
-            # 要求：gap 有明显改善
+            # Require: meaningful quality improvement
             min_abs_improve = float(self.t_cfg.get("t3_min_abs_improve", 0.0))
             max_time_factor = float(self.t_cfg.get("t3_max_time_factor", 1.5))
 
             if obj_c >= obj_p - min_abs_improve:
                 return False, "no_quality_gain"
 
-            # 时间不能爆炸增长
+            # Prevent excessive time blow-up
             if time_c > time_p * max_time_factor:
                 return False, "too_slow"
 
-            # iLDR 为正，本身就意味着 log-gap 在下降
+            # iLDR > 0 implies log-gap is decreasing
             if iLDR > 0.0:
                 return True, f"polish_win(iLDR={iLDR:.3f}, tLDR={tLDR:.3f})"
 
             return False, "no_improve"
 
-        # 其它未知阶段，保守拒绝
+        # Unknown phase: conservative reject
         return False, f"unknown_phase({phase_tag})"
-
-
-
-
-    #     # 全局质量护栏：过于糟糕的解直接拒绝
-    #     Omax = float(self.t_cfg.get("Omax", 20.0))
-    #     if obj_c > Omax:
-    #         return False, f"quality_over_Omax({Omax})"
-
-    #     # 若父代缺失，退化为无信息
-    #     if obj_p is None or obj_p >= 1e9:
-    #         return False, "invalid_parent"
-
-    #     # 拿出通用阈值
-    #     gamma_rel = float(self.t_cfg.get("gamma_rel", 0.10))
-    #     gamma_abs = float(self.t_cfg.get("gamma_abs", 0.5))
-
-    #     # 若没有时间信息，则退化为纯质量规则
-    #     if time_p is None or time_c is None or time_p <= 0.0 or time_c <= 0.0:
-    #         thr = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
-    #         if obj_c <= thr:
-    #             return True, "quality_win(no_time)"
-    #         return False, "no_improve(no_time)"
-
-    #     # 有时间和 gap，计算 LDR 指标
-    #     ldr = self._compute_ldr_fields(obj_p, obj_c, time_p, time_c)
-    #     iLDR = ldr.get("ldr_i", 0.0)
-    #     tLDR = ldr.get("ldr_t", 0.0)
-
-    #     # 速度提升（正数表示更快）
-    #     speed_gain = (time_p - time_c) / max(time_p, 1e-9)
-    #     rel_regret = (obj_c - obj_p) / max(obj_p, 1e-9)
-
-    #     # 质量安全阈
-    #     thr_quality = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
-
-    #     # --------- t1: 结构级（质量 + 动力学折中） ---------
-    #     if phase_tag == "t1":
-    #         # 质量直观提升，直接接受
-    #         if obj_c <= thr_quality:
-    #             return True, f"quality_win(iLDR={iLDR:.3f}, tLDR_{tLDR_source}={tLDR:.3f})"
-
-    #         # 允许一定 regret 换动力学提升
-    #         max_rel_regret = float(self.t_cfg.get("t1_max_rel_regret", gamma_rel))
-    #         min_score = float(self.t_cfg.get("t1_min_ldr_score", 0.0))
-    #         alpha = float(self.t_cfg.get("t1_ldr_alpha", 1.0))   # tLDR 权重
-    #         beta = float(self.t_cfg.get("t1_ldr_beta", 1.0))     # iLDR 权重
-    #         score = alpha * tLDR + beta * iLDR
-
-    #         if rel_regret <= max_rel_regret and score >= min_score:
-    #             return True, f"ldr_win(score={score:.3f}, iLDR={iLDR:.3f}, tLDR_{tLDR_source}={tLDR:.3f})"
-
-    #         return False, "no_improve"
-
-    #     # --------- t2: 时间 shrinker（效率优先） ---------
-    #     if phase_tag == "t2":
-    #         # 若 gap 明显变好，也可以接受
-    #         if obj_c <= thr_quality:
-    #             return True, f"quality_win(iLDR={iLDR:.3f}, tLDR_{tLDR_source}={tLDR:.3f})"
-
-    #         # 否则要求：时间明显缩短 + tLDR > 0 + 质量退化有限
-    #         min_speed_gain = float(self.t_cfg.get("t2_min_speed_gain", 0.05))   # 至少 5% 提速
-    #         max_rel_regret = float(self.t_cfg.get("t2_max_rel_regret", 0.02))   # gap 最多坏 2%
-
-    #         if speed_gain >= min_speed_gain and tLDR > 0.0 and rel_regret <= max_rel_regret:
-    #             return True, (
-    #                 f"speed_shrink(Δt={speed_gain:.3f}, rel_regret={rel_regret:.3f}, "
-    #                 f"iLDR={iLDR:.3f}, tLDR={tLDR:.3f})"
-    #             )
-
-    #         return False, "no_improve"
-
-    #     # --------- t3: 质量抛光（少量时间换较大质量提升） ---------
-    #     if phase_tag == "t3":
-    #         # 要求：gap 有明显改善
-    #         min_abs_improve = float(self.t_cfg.get("t3_min_abs_improve", 0.0))
-    #         max_time_factor = float(self.t_cfg.get("t3_max_time_factor", 1.5))
-
-    #         if obj_c >= obj_p - min_abs_improve:
-    #             return False, "no_quality_gain"
-
-    #         # 时间不能爆炸增长
-    #         if time_c > time_p * max_time_factor:
-    #             return False, "too_slow"
-
-    #         # iLDR 为正，本身就意味着 log-gap 在下降
-    #         if iLDR > 0.0:
-    #             return True, f"polish_win(iLDR={iLDR:.3f}, tLDR={tLDR:.3f})"
-
-    #         return False, "no_improve"
-
-    #     # 其它未知阶段，保守拒绝
-    #     return False, f"unknown_phase({phase_tag})"
-
-
-
-    #     # 全局质量护栏：过于糟糕的解直接拒绝
-    #     Omax = self.t_cfg["Omax"]
-    #     if obj_c > Omax:
-    #         return False, f"quality_over_Omax({Omax})"
-
-    #     alpha     = self.t_cfg["alpha"].get(phase_tag, 0.0)
-    #     beta_abs  = self.t_cfg["beta_abs"].get(phase_tag, 0.0)
-    #     gamma_rel = self.t_cfg["gamma_rel"]
-    #     gamma_abs = self.t_cfg["gamma_abs"]
-
-    #     # 若父代 / 候选没有时间信息，则退化为纯质量比较
-    #     if time_p is None or time_c is None or time_p <= 0:
-    #         thr = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
-    #         if obj_c <= thr:
-    #             return True, "quality_win(no_time)"
-    #         return False, "no_improve(no_time)"
-
-    #     # 情形 1：速度赢（在允许的质量损失范围内）
-    #     speed_gain = (time_p - time_c) / max(time_p, 1e-9)
-    #     if speed_gain >= alpha and obj_c <= obj_p + beta_abs:
-    #         return True, f"speed_win(Δt={speed_gain:.3f}, Δobj={obj_c - obj_p:.3f})"
-
-    #     # 情形 2：质量赢（允许时间略微劣化）
-    #     thr = min(obj_p * (1.0 + gamma_rel), obj_p + gamma_abs)
-    #     if obj_c <= thr:
-    #         return True, "quality_win"
-
-    #     return False, "no_improve"
 
     def _compute_ldr_fields(self, obj_parent, obj_child, time_parent, time_child):
         """
-        计算 Lyapunov 风格的 LDR 指标：
+        Compute Lyapunov-style LDR metrics:
           - V = max(gap, delta)
           - iLDR = log(V_parent) - log(V_child)
           - tLDR = iLDR / time_child
-        返回一个 dict，包含:
+
+        Returns a dict containing:
           V_parent, V_child, ldr_i, ldr_t
-        若信息不足或数值不合法，返回 0.
+
+        If info is insufficient or values are invalid, returns zeros.
         """
         delta = float(self.t_cfg.get("ldr_delta", 1e-6))
         eps_t = float(self.t_cfg.get("ldr_eps_time", 1e-9))
@@ -1116,11 +939,9 @@ class InterfaceEC:
                 "ldr_t": 0.0,
             }
 
-
-
     def _ensure_t_history(self, indiv):
         """
-        确保 indiv['other_inf']['t_history'] 存在，并返回这个 list。
+        Ensure indiv['other_inf']['t_history'] exists and return this list.
         """
         if indiv is None:
             return []
@@ -1142,11 +963,10 @@ class InterfaceEC:
         """
         return self._compute_ldr_fields(obj_parent, obj_child, time_parent, time_child)
 
-
     def _ensure_em_history(self, indiv):
         """
-        确保 indiv['other_inf']['em_history'] 存在，并返回这个 list。
-        em_history 用来记录 e/m 阶段的局部编辑（带 LDR）。
+        Ensure indiv['other_inf']['em_history'] exists and return this list.
+        em_history records local edits in e/m phases (with LDR).
         """
         if indiv is None:
             return []
@@ -1162,14 +982,14 @@ class InterfaceEC:
 
     def _record_em_attempt(self, parent_indiv, child_indiv, operator, gen_index=None):
         """
-        在 parent_indiv.other_inf['em_history'] 里追加一条记录：
-        - gen：发生在哪一代（来自 DASH.run 传下来的 gen_index）
-        - operator：使用的是哪一个 i/e/m 算子
-        - obj/time：父子 objective 与 eval_time
-        - V_parent/V_child/iLDR/tLDR：由 _compute_ldr_fields 计算
+        Append a record into parent_indiv.other_inf['em_history']:
+        - gen: which generation (from DASH.run via gen_index)
+        - operator: which i/e/m operator
+        - obj/time: parent/child objective and eval_time
+        - V_parent/V_child/iLDR/tLDR: computed by _compute_ldr_fields
         """
         try:
-            # 这里只在 parent/child 都是 dict 的情况下记录，避免和上层 Individual 包装冲突
+            # Only record when both parent/child are dicts to avoid wrapper conflicts
             if not isinstance(parent_indiv, dict) or not isinstance(child_indiv, dict):
                 return
 
@@ -1204,8 +1024,8 @@ class InterfaceEC:
                           obj_parent, time_parent, obj_child, time_child,
                           accepted, reason, meta_child=None):
         """
-        在 parent_indiv.other_inf['t_history'] 里追加一条记录，并截断到 maxlen。
-        现在会额外写入：
+        Append a record into parent_indiv.other_inf['t_history'] and truncate to maxlen.
+        Additionally writes:
           - V_parent / V_child
           - ldr_i / ldr_t
           - ldr_score = ldr_alpha * ldr_t + ldr_beta * ldr_i
@@ -1213,7 +1033,7 @@ class InterfaceEC:
         try:
             hist = self._ensure_t_history(parent_indiv)
 
-            # 先填入基础信息
+            # Fill basic info
             rec = {
                 "gen": int(gen_index) if gen_index is not None else None,
                 "stage": stage,
@@ -1225,7 +1045,7 @@ class InterfaceEC:
                 "time_child": float(time_child) if time_child is not None else None,
             }
 
-            # 计算 LDR 指标
+            # Compute LDR metrics
             ldr_fields = self._compute_ldr_fields(
                 rec["obj_parent"],
                 rec["obj_child"],
@@ -1242,7 +1062,7 @@ class InterfaceEC:
                     tldr_traj = meta_child.get("tLDR_traj", None)
             rec["tLDR_traj"] = float(tldr_traj) if tldr_traj is not None else None
 
-            # 统一的 LDR score（方便后续分析 / 策略）
+            # Unified LDR score (for analysis / policy)
             ldr_alpha = float(self.t_cfg.get("ldr_alpha", 0.5))
             ldr_beta = float(self.t_cfg.get("ldr_beta", 0.5))
             rec["ldr_score"] = (
@@ -1258,36 +1078,11 @@ class InterfaceEC:
             if self.debug:
                 print(f"[WARN] failed to record T history: {e}")
 
-
-
-    #         # 先计算 LDR 相关字段
-    #         ldr = self._compute_ldr_fields(obj_parent, time_parent, obj_child, time_child)
-
-    #         rec = {
-    #             "gen": int(gen_index) if gen_index is not None else None,
-    #             "stage": stage,
-    #             "accepted": bool(accepted),
-    #             "reason": str(reason),
-    #             "obj_parent": float(obj_parent) if obj_parent is not None else None,
-    #             "time_parent": float(time_parent) if time_parent is not None else None,
-    #             "obj_child": float(obj_child) if obj_child is not None else None,
-    #             "time_child": float(time_child) if time_child is not None else None,
-    #         }
-    #         rec.update(ldr)
-
-    #         hist.append(rec)
-    #         maxlen = int(self.t_cfg.get("t_history_maxlen", 5) or 5)
-    #         if len(hist) > maxlen:
-    #             del hist[:-maxlen]
-    #     except Exception as e:
-    #         if self.debug:
-    #             print(f"[WARN] failed to record T history: {e}")
-
     def _persist_t_accept(self, indiv, attempt_count, success_count, path_tags=None):
         """
-        当 T 阶段某个方案被 ACCEPT 时，把它的 code + gls_spec 导出为一个独立的 solver.py（GLS 版本）。
-        现在同时把评估得到的 meta（other_inf，包括 per-instance 结果）一并写入 JSON，
-        并增加 code_hash / gls_spec_hash 方便后续聚合分析。
+        When a T-phase solution is ACCEPTed, export its code + gls_spec as a standalone solver.py (GLS version).
+        Also write evaluation meta (other_inf, including per-instance results) into JSON,
+        and add code_hash / gls_spec_hash for aggregation analysis.
         """
         try:
             if not self.output_dir:
@@ -1295,7 +1090,7 @@ class InterfaceEC:
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            # 文件名中加上一点可读的 tag 信息，方便区分来源
+            # Add readable tag info into filename for easier identification
             tag_suffix = ""
             if path_tags:
                 safe_tags = [str(t).replace(" ", "_") for t in path_tags]
@@ -1308,12 +1103,12 @@ class InterfaceEC:
             out_js = os.path.join(self.output_dir, "results", "exports", fjson)
             os.makedirs(os.path.dirname(out_py), exist_ok=True)
 
-            # 从个体中拿到评估元信息（在 _evaluate_individual / T-phase 中已经写入 other_inf）
+            # Get evaluation metadata (written in _evaluate_individual / T-phase)
             meta = indiv.get("other_inf") or {}
             if not isinstance(meta, dict):
                 meta = {"raw_other_inf": meta}
 
-            # 计算 code / spec 的哈希，便于后续聚合
+            # Hash code/spec for aggregation
             code = indiv.get("code") or ""
             gls_spec_obj = indiv.get("gls_spec")
 
@@ -1326,7 +1121,7 @@ class InterfaceEC:
                     spec_json = json.dumps(gls_spec_obj, sort_keys=True, ensure_ascii=False)
                     gls_spec_hash = hashlib.sha256(spec_json.encode("utf-8")).hexdigest()
             except Exception:
-                # 哈希失败不影响主流程
+                # Hash failures do not affect the main flow
                 code_hash = None
                 gls_spec_hash = None
 
@@ -1347,7 +1142,7 @@ class InterfaceEC:
             with open(out_js, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
 
-            # 代码文件仍然通过 _write_export_py 生成
+            # Write code file via _write_export_py
             self._write_export_py(out_py, indiv, payload)
 
             if self.debug:
@@ -1356,11 +1151,9 @@ class InterfaceEC:
             if self.debug:
                 print(f"[WARN] Failed to export accepted T-solution: {e}")
 
-
-
     def _write_export_py(self, path, individual, meta):
         """
-        写出一个可直接 import 使用的 solver 文件（GLS 版本）。
+        Write an importable solver file (GLS version).
         """
         code = individual.get("code", "")
         gls_spec = individual.get("gls_spec")
@@ -1372,7 +1165,7 @@ class InterfaceEC:
             spec_json = "null"
 
         if gls_spec is not None:
-            # ==== GLS 导出 ====
+            # ==== GLS export ====
             content = f"""# Auto-generated by DASH — accepted GLS solver (framework + evolved heuristic)
 
 import json
@@ -1423,7 +1216,8 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
 
     def run_t_pipeline_gls(self, pop, seed_pool=None, best_obj=None, fastest_time=None):
         """
-        保留旧接口以兼容历史调用；当前实现会在内部选择一个父代并调用 run_t_pipeline_for_parent。
+        Keep the legacy interface for historical callers.
+        Current implementation selects one parent internally and calls run_t_pipeline_for_parent.
         """
         parents = self._choose_t_parent(pop, seed_pool=seed_pool)
         if not parents:
@@ -1440,17 +1234,17 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
         pop_objs = [p.get('objective') for p in pop if p.get('objective', 1e10) < 1e9]
         return self.run_t_pipeline_for_parent(parent=parent, pop_objs=pop_objs, gen_index=None)
 
-
     def run_t_pipeline_for_parent(self, parent, pop_objs=None, gen_index=None, ssl_stage=None, dsl_stage=None):
         """
-        在给定父代上执行 GLS T-phase（t1→t2→t3 + bypass），
-        接受准则相对该父代（及级联的中间候选），返回单个“最佳时间”的子代。
+        Run GLS T-phase (t1→t2→t3 + bypass) on a given parent,
+        using acceptance relative to the parent (and cascaded intermediate candidates),
+        and return the single child with the best (fastest) time.
 
-        关键修改：
-        - 仍然允许 t1/t2/t3 各自用 LDR + 质量/时间规则做局部接受；
-        - 但在“最终决策”阶段，增加一个全局时间约束：
-            * 只在 eval_time 不超过 parent_time * t_final_max_time_factor 的候选中选
-            * 若无任何候选满足，则视为本次 T 失败，保留父代（不更新 spec）
+        Key change:
+        - Still allow local acceptance in t1/t2/t3 using LDR + quality/time rules;
+        - But in the final decision, add a global time constraint:
+            * choose only among candidates with eval_time <= parent_time * t_final_max_time_factor
+            * if none, treat this T attempt as failure and keep the parent (do not update spec)
         """
         gen_idx = gen_index
         stage_tag = ssl_stage or dsl_stage
@@ -1512,12 +1306,12 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
         path = []
         accepted_candidates = []
 
-        # ---------- T1: 结构级别的 spec 调整 ----------
+        # ---------- T1: structure-level spec adjustment ----------
         if self.t_cfg.get("verbose", True):
             print(f"=== {dsl_tag} T1(GLS): Structure Swap ===")
         attempt_count["t1_gls_structure"] += 1
 
-        # 注意：这里不要再传 pop_objs，Evolution.t1_gls_structure 只接受 (parent_indiv, rejection_reason)
+        # Do not pass pop_objs; Evolution.t1_gls_structure accepts only (parent_indiv, rejection_reason)
         spec1 = self.evol.t1_gls_structure(parent, rejection_reason=None)
 
         if spec1:
@@ -1572,9 +1366,9 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
             current = cand1
             accepted_candidates.append(cand1)
 
-        # ---------- 主路径：在 T1 基础上尝试 T2/T3 ----------
+        # ---------- Main path: try T2/T3 on top of T1 ----------
         if current is not None:
-            # T2 正常
+            # T2 normal
             if self.t_cfg.get("verbose", True):
                 print(f"=== {dsl_tag} T2(GLS): Param Tune ===")
             attempt_count["t2_gls_param"] += 1
@@ -1627,7 +1421,7 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
                     current = cand2
                     accepted_candidates.append(cand2)
 
-            # T3 正常
+            # T3 normal
             if self.t_cfg.get("verbose", True):
                 print(f"=== {dsl_tag} T3(GLS): Single-Module Tweak ===")
             attempt_count["t3_gls_module"] += 1
@@ -1679,7 +1473,7 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
                     success_count["t3_gls_module"] += 1
                     accepted_candidates.append(cand3)
 
-        # ---------- bypass 路径：T1 不通过 ----------
+        # ---------- Bypass path: if T1 fails ----------
         if (not ok1) and self.t_cfg.get("bypass_on_fail", True):
             # T2 bypass
             if self.t_cfg.get("verbose", True):
@@ -1781,9 +1575,9 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
                         success_count["t3_gls_module"] += 1
                         accepted_candidates.append(cand3b)
 
-        # ---------- 最终决策（新增：全局时间单调约束） ----------
+        # ---------- Final decision (NEW: global monotonic time constraint) ----------
         if accepted_candidates:
-            # 允许的最大时间放大倍数（默认 1.0：不允许比 parent 慢）
+            # Max time amplification factor (default 1.0: not slower than parent)
             max_time_factor = float(self.t_cfg.get("t_final_max_time_factor", 1.0))
             parent_time_cap = None
             if parent_time is not None and parent_time > 0.0 and max_time_factor > 0.0:
@@ -1793,14 +1587,14 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
             for c in accepted_candidates:
                 t_child = c.get("eval_time", None)
                 if parent_time_cap is None or t_child is None:
-                    # 没有 parent_time 信息时，退化为原始行为
+                    # If parent_time is missing, fall back to original behavior
                     feasible.append(c)
                 else:
                     if t_child <= parent_time_cap + 1e-9:
                         feasible.append(c)
 
             if not feasible:
-                # 所有候选都比父代慢太多：本次 T 视为失败，不更新 parent
+                # All candidates are too slow compared to parent: treat this T as failure
                 return {
                     "accepted": False,
                     "reason": "no_candidate_faster_than_parent",
@@ -1833,7 +1627,7 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
                 "stage": chosen.get("stage", None),
             }
 
-        # 三个阶段都没产生可接受方案
+        # No acceptable solution produced in all stages
         return {
             "accepted": False,
             "reason": f"t1_gls_reject:{reason1}",
@@ -1844,357 +1638,10 @@ def evaluate_dataset(coords_list, instances_list, opt_costs_list,
             "stage": None,
         }
 
-
-
-
-    #     参数
-    #     ----
-    #     parent : dict
-    #         当前要做 T 阶段优化的个体。
-    #     pop_objs : list or None
-    #         当前种群的 objective 列表（可选，暂时不传给 t1/t2/t3，只是保留接口）。
-    #     gen_index : int or None
-    #         当前 generation index，用于写日志。
-    #     dsl_stage : str or None
-    #         标记当前是 SSL-1 还是 SSL-2（例如 "dsl1" / "dsl2"），
-    #         目前只用于打印前缀，不改变接受逻辑。
-    #     """
-    #     gen_idx = gen_index
-    #     dsl_tag = f"[{dsl_stage}]" if dsl_stage else ""
-
-
-    #     if parent is None:
-    #         return {
-    #             "accepted": False,
-    #             "reason": "no_parent",
-    #             "individual": None,
-    #             "path": [],
-    #             "attempt_count": {},
-    #             "success_count": {},
-    #             "stage": None,
-    #         }
-
-    #     if not parent.get('gls_spec'):
-    #         parent['gls_spec'] = self._default_gls_spec()
-
-    #     parent_obj = parent.get('objective', 1e10)
-    #     parent_time = parent.get('eval_time', None)
-
-    #     attempt_count = {
-    #         "t1_gls_structure": 0,
-    #         "t2_gls_param": 0,
-    #         "t3_gls_module": 0,
-    #     }
-    #     success_count = {
-    #         "t1_gls_structure": 0,
-    #         "t2_gls_param": 0,
-    #         "t3_gls_module": 0,
-    #     }
-    #     path = []
-    #     accepted_candidates = []
-
-    #     # ---------- T1: 结构级别的 spec 调整 ----------
-    #     if self.t_cfg.get("verbose", True):
-    #         print(f"=== {dsl_tag} T1(GLS): Structure Swap ===")
-    #     attempt_count["t1_gls_structure"] += 1
-
-    #     # 关键改动：这里不要再传 pop_objs，Evolution.t1_gls_structure 只接受 (parent_indiv, rejection_reason)
-    #     spec1 = self.evol.t1_gls_structure(parent, rejection_reason=None)
-
-    #     if spec1:
-    #         cand1 = {
-    #             "algorithm": (parent.get("algorithm", "") + " [t1_gls_structure]"),
-    #             "code": parent.get("code"),
-    #             "gls_spec": spec1,
-    #             "stage": "t1",
-    #         }
-    #         t0 = time.time()
-    #         res1, _ = self._evaluate_with_timeout(cand1, self.timeout)
-    #         t1_time = time.time()
-    #         cand1["eval_time"] = t1_time - t0
-    #         cand1["objective"] = res1.get("fitness", 1e10)
-
-    #         parent_meta = dict(parent.get("other_inf") or {})
-    #         meta1 = res1.get("meta", {}) or {}
-    #         parent_meta.update(meta1)
-    #         cand1["other_inf"] = parent_meta
-
-    #         path.append("t1_gls")
-    #         ok1, reason1 = self._accept_new_parent(
-    #             cand1["objective"],
-    #             cand1["eval_time"],
-    #             parent_obj,
-    #             parent_time,
-    #             "t1",
-    #             meta=cand1.get("other_inf"),
-    #         )
-    #         _print_stage("t1_gls", cand1, ok1, reason1)
-
-    #         self._record_t_attempt(
-    #             parent_indiv=parent,
-    #             stage="t1",
-    #             gen_index=gen_idx,
-    #             obj_parent=parent_obj,
-    #             time_parent=parent_time,
-    #             obj_child=cand1["objective"],
-    #             time_child=cand1["eval_time"],
-    #             accepted=ok1,
-    #             reason=reason1,
-    #         )
-    #     else:
-    #         cand1 = None
-    #         ok1, reason1 = False, "t1_no_spec"
-
-    #     current = None
-    #     if ok1 and cand1 is not None:
-    #         success_count["t1_gls_structure"] += 1
-    #         current = cand1
-    #         accepted_candidates.append(cand1)
-
-    #     # ---------- 主路径：在 T1 基础上尝试 T2/T3 ----------
-    #     if current is not None:
-    #         # T2 正常
-    #         if self.t_cfg.get("verbose", True):
-    #             print(f"=== {dsl_tag} T2(GLS): Param Tune ===")
-    #         attempt_count["t2_gls_param"] += 1
-    #         spec2 = self.evol.t2_gls_param(current, rejection_reason=None)
-    #         if spec2:
-    #             cand2 = {
-    #                 "algorithm": (current.get("algorithm", "") + " [t2_gls_param]"),
-    #                 "code": current.get("code"),
-    #                 "gls_spec": spec2,
-    #                 "stage": "t2",
-    #             }
-    #             t0 = time.time()
-    #             res2, _ = self._evaluate_with_timeout(cand2, self.timeout)
-    #             t2_time = time.time()
-    #             cand2["eval_time"] = t2_time - t0
-    #             cand2["objective"] = res2.get("fitness", 1e10)
-
-    #             parent_meta = dict(current.get("other_inf") or {})
-    #             meta2 = res2.get("meta", {}) or {}
-    #             parent_meta.update(meta2)
-    #             cand2["other_inf"] = parent_meta
-
-    #             path.append("t2_gls")
-    #             ok2, reason2 = self._accept_new_parent(
-    #                 cand2["objective"],
-    #                 cand2["eval_time"],
-    #                 current["objective"],
-    #                 current.get("eval_time", None),
-    #                 "t2",
-    #                 meta=cand2.get("other_inf"),
-    #             )
-    #             _print_stage("t2_gls", cand2, ok2, reason2)
-
-    #             self._record_t_attempt(
-    #                 parent_indiv=current,
-    #                 stage="t2",
-    #                 gen_index=gen_idx,
-    #                 obj_parent=current["objective"],
-    #                 time_parent=current.get("eval_time", None),
-    #                 obj_child=cand2["objective"],
-    #                 time_child=cand2["eval_time"],
-    #                 accepted=ok2,
-    #                 reason=reason2,
-    #             )
-
-    #             if ok2:
-    #                 success_count["t2_gls_param"] += 1
-    #                 current = cand2
-    #                 accepted_candidates.append(cand2)
-
-    #         # T3 正常
-    #         if self.t_cfg.get("verbose", True):
-    #             print(f"=== {dsl_tag} T3(GLS): Single-Module Tweak ===")
-    #         attempt_count["t3_gls_module"] += 1
-    #         spec3 = self.evol.t3_gls_module(current, rejection_reason=None)
-    #         if spec3:
-    #             cand3 = {
-    #                 "algorithm": (current.get("algorithm", "") + " [t3_gls_module]"),
-    #                 "code": current.get("code"),
-    #                 "gls_spec": spec3,
-    #                 "stage": "t3",
-    #             }
-    #             t0 = time.time()
-    #             res3, _ = self._evaluate_with_timeout(cand3, self.timeout)
-    #             t3_time = time.time()
-    #             cand3["eval_time"] = t3_time - t0
-    #             cand3["objective"] = res3.get("fitness", 1e10)
-
-    #             parent_meta = dict(current.get("other_inf") or {})
-    #             meta3 = res3.get("meta", {}) or {}
-    #             parent_meta.update(meta3)
-    #             cand3["other_inf"] = parent_meta
-
-    #             path.append("t3_gls")
-    #             ok3, reason3 = self._accept_new_parent(
-    #                 cand3["objective"],
-    #                 cand3["eval_time"],
-    #                 current["objective"],
-    #                 current.get("eval_time", None),
-    #                 "t3",
-    #                 meta=cand3.get("other_inf"),
-    #             )
-    #             _print_stage("t3_gls", cand3, ok3, reason3)
-
-    #             self._record_t_attempt(
-    #                 parent_indiv=current,
-    #                 stage="t3",
-    #                 gen_index=gen_idx,
-    #                 obj_parent=current["objective"],
-    #                 time_parent=current.get("eval_time"),
-    #                 obj_child=cand3["objective"],
-    #                 time_child=cand3["eval_time"],
-    #                 accepted=ok3,
-    #                 reason=reason3,
-    #             )
-
-    #             if ok3:
-    #                 success_count["t3_gls_module"] += 1
-    #                 accepted_candidates.append(cand3)
-
-    #     # ---------- bypass 路径：T1 不通过 ----------
-    #     if (not ok1) and self.t_cfg.get("bypass_on_fail", True):
-    #         # T2 bypass
-    #         if self.t_cfg.get("verbose", True):
-    #             print(f"=== {dsl_tag} T2(GLS): Param Tune (bypass) ===")
-    #         attempt_count["t2_gls_param"] += 1
-    #         spec2b = self.evol.t2_gls_param(parent, rejection_reason=reason1)
-    #         if spec2b:
-    #             cand2b = {
-    #                 "algorithm": (parent.get("algorithm", "") + " [t2_gls_param_bypass]"),
-    #                 "code": parent.get("code"),
-    #                 "gls_spec": spec2b,
-    #                 "stage": "t2_bypass",
-    #             }
-    #             t0 = time.time()
-    #             res2b, _ = self._evaluate_with_timeout(cand2b, self.timeout)
-    #             t2b_time = time.time()
-    #             cand2b["eval_time"] = t2b_time - t0
-    #             cand2b["objective"] = res2b.get("fitness", 1e10)
-
-    #             parent_meta = dict(parent.get("other_inf") or {})
-    #             meta2b = res2b.get("meta", {}) or {}
-    #             parent_meta.update(meta2b)
-    #             cand2b["other_inf"] = parent_meta
-
-    #             path.append("t2_gls(bypass)")
-    #             ok2b, reason2b = self._accept_new_parent(
-    #                 cand2b["objective"],
-    #                 cand2b["eval_time"],
-    #                 parent_obj,
-    #                 parent_time,
-    #                 "t2",
-    #                 meta=cand2b.get("other_inf"),
-    #             )
-    #             _print_stage("t2_gls(bypass)", cand2b, ok2b, reason2b)
-
-    #             self._record_t_attempt(
-    #                 parent_indiv=parent,
-    #                 stage="t2_bypass",
-    #                 gen_index=gen_idx,
-    #                 obj_parent=parent_obj,
-    #                 time_parent=parent_time,
-    #                 obj_child=cand2b["objective"],
-    #                 time_child=cand2b["eval_time"],
-    #                 accepted=ok2b,
-    #                 reason=reason2b,
-    #             )
-
-    #             if ok2b:
-    #                 success_count["t2_gls_param"] += 1
-    #                 accepted_candidates.append(cand2b)
-
-    #             # T3 bypass
-    #             if self.t_cfg.get("verbose", True):
-    #                 print(f"=== {dsl_tag} T3(GLS): Single-Module (bypass) ===")
-    #             attempt_count["t3_gls_module"] += 1
-    #             spec3b = self.evol.t3_gls_module(parent, rejection_reason=reason2b)
-    #             if spec3b:
-    #                 cand3b = {
-    #                     "algorithm": (parent.get("algorithm", "") + " [t3_gls_module_bypass]"),
-    #                     "code": parent.get("code"),
-    #                     "gls_spec": spec3b,
-    #                     "stage": "t3_bypass",
-    #                 }
-    #                 t0 = time.time()
-    #                 res3b, _ = self._evaluate_with_timeout(cand3b, self.timeout)
-    #                 t3b_time = time.time()
-    #                 cand3b["eval_time"] = t3b_time - t0
-    #                 cand3b["objective"] = res3b.get("fitness", 1e10)
-
-    #                 parent_meta = dict(parent.get("other_inf") or {})
-    #                 meta3b = res3b.get("meta", {}) or {}
-    #                 parent_meta.update(meta3b)
-    #                 cand3b["other_inf"] = parent_meta
-
-    #                 path.append("t3_gls(bypass)")
-    #                 ok3b, reason3b = self._accept_new_parent(
-    #                     cand3b["objective"],
-    #                     cand3b["eval_time"],
-    #                     parent_obj,
-    #                     parent_time,
-    #                     "t3",
-    #                     meta=cand3b.get("other_inf"),
-    #                 )
-    #                 _print_stage("t3_gls(bypass)", cand3b, ok3b, reason3b)
-
-    #                 self._record_t_attempt(
-    #                     parent_indiv=parent,
-    #                     stage="t3_bypass",
-    #                     gen_index=gen_idx,
-    #                     obj_parent=parent_obj,
-    #                     time_parent=parent_time,
-    #                     obj_child=cand3b["objective"],
-    #                     time_child=cand3b["eval_time"],
-    #                     accepted=ok3b,
-    #                     reason=reason3b,
-    #                 )
-
-    #                 if ok3b:
-    #                     success_count["t3_gls_module"] += 1
-    #                     accepted_candidates.append(cand3b)
-
-    #     # ---------- 最终决策 ----------
-    #     if accepted_candidates:
-    #         chosen = min(
-    #             accepted_candidates,
-    #             key=lambda c: c.get("eval_time", float("inf")),
-    #         )
-    #         try:
-    #             if chosen.get("gls_spec"):
-    #                 self.best_gls_spec = chosen["gls_spec"]
-    #             self._persist_t_accept(chosen, attempt_count, success_count, path_tags=path)
-    #             self._last_t_accept = chosen
-    #         except Exception:
-    #             pass
-
-    #         return {
-    #             "accepted": True,
-    #             "reason": "ok",
-    #             "individual": chosen,
-    #             "path": path,
-    #             "attempt_count": attempt_count,
-    #             "success_count": success_count,
-    #             "stage": chosen.get("stage", None),
-    #         }
-
-    #     # 三个阶段都没产生可接受方案
-    #     return {
-    #         "accepted": False,
-    #         "reason": f"t1_gls_reject:{reason1}",
-    #         "individual": None,
-    #         "path": path,
-    #         "attempt_count": attempt_count,
-    #         "success_count": success_count,
-    #         "stage": None,
-    #     }
-
-
     # =================== T-phase entry (GLS only) ===================
     def run_t_pipeline(self, pop, seed_pool=None, best_obj=None, fastest_time=None):
         """
-        保留旧入口，当前未在 DASH.run 中使用；内部转发到 run_t_pipeline_gls。
+        Keep the legacy entry point (not used in DASH.run currently);
+        internally forwards to run_t_pipeline_gls.
         """
         return self.run_t_pipeline_gls(pop, seed_pool=seed_pool, best_obj=best_obj, fastest_time=fastest_time)

@@ -36,9 +36,10 @@ class Evolution:
             os.makedirs(self.dialogue_path, exist_ok=True)
             os.makedirs(os.path.join(self.dialogue_path, "t_phase"), exist_ok=True)
 
-        # T-phase history 控制（用于“带记忆的 top-k T 优化”）
+        # T-phase history controls (used for "memory-aware" top-k T optimization)
         self.t_history_maxlen = kwargs.get("t_history_maxlen", 5)
         self.t_history_in_prompt = kwargs.get("t_history_in_prompt", True)
+
         # ---- Operator name mapping (DASH naming)
         # `operator_name` inside this class refers to the *implementation* method name
         # (e.g., e1/e2/m1...), while `op_name_map` provides a user-facing display name.
@@ -57,8 +58,6 @@ class Evolution:
                 "t3_gls_module": "SSL/T3-Module",
             },
         )
-
-
 
     # ---------------- logging ----------------
     def _log_dialogue(self, operator_name, prompt, response, extra=None, phase='e'):
@@ -89,8 +88,6 @@ class Evolution:
                 print(f"[WARN] Failed to log LLM dialogue: {e}")
 
     # ---------------- legacy i/e/m prompts ----------------
-
-        # ---------------- legacy i/e/m prompts ----------------
     def get_prompt_i1(self):
         baseline_hint = (
             "We already have a strong classical Guided Local Search (GLS) baseline.\n"
@@ -116,8 +113,6 @@ class Evolution:
             "Do not give additional explanations."
         )
         return prompt_content
-
-
 
     def get_prompt_e1(self, indivs):
         prompt_indiv = ""
@@ -253,18 +248,18 @@ class Evolution:
         return self._get_alg(self.get_prompt_m3(parent), "m3")
 
     # =========================================================
-    # ===============  GLSSpec（同骨架）T阶段  =================
+    # ===============  GLSSpec (same skeleton) T-phase  ========
     # =========================================================
 
     @staticmethod
     def _default_gls_spec_dict():
         """
-        与 zTSP/gls/spec.py 中 GLSSpec 的默认配置保持一致：
-        - kNN 候选集以 k=45 为中心（你的 grid sweet spot）
-        - loop_max / max_no_improve 稍微收紧：400 / 80
-        - 默认开启 random_relocate 扰动，interval=80
-        - mid_ls guidance，top_k=6，type="llm"
-        - 默认 time_limit_s=10.0 秒
+        Keep consistent with GLSSpec defaults in zTSP/gls/spec.py:
+        - kNN candidate set centered at k=45 (your grid sweet spot)
+        - schedule slightly tightened: loop_max/max_no_improve = 400/80
+        - default random_relocate perturbation with interval=80
+        - mid_ls guidance, top_k=6, type="llm"
+        - default time_limit_s = 10.0 seconds
         """
         return {
             "init": {"method": "nearest_neighbor", "start": 0, "multi_start": 1},
@@ -292,18 +287,17 @@ class Evolution:
             "stopping": {"time_limit_s": 10.0},
         }
 
-
     def _clip_gls_spec(self, d: dict) -> dict:
-        # k, top_k, loop_max/max_no_improve, time_limit_s 做裁剪
-        # 目标：把搜索空间收缩到一块“中等强度、时间受控”的区域，
-        # 让 T 阶段别再跑到特别重或特别弱的 spec 上。
+        # Clip key parameters: k, top_k, loop_max/max_no_improve, time_limit_s.
+        # Goal: shrink the search space into a "moderately strong, time-controlled"
+        # region so T-phase does not drift into extremely heavy or extremely weak specs.
 
         # candset.k
         try:
             cs = d.get("candset", {}) or {}
-            # 默认值靠近我们期望的中心（约 60）
+            # Default close to the desired center (around 60)
             k = int(cs.get("k", 60))
-            # 邻居数限制在 [16, 128] 之间，避免太小/太大
+            # Limit neighbors to [16, 128] to avoid too small/too large
             k = max(16, min(k, 128))
             cs["k"] = k
             d["candset"] = cs
@@ -314,12 +308,12 @@ class Evolution:
         try:
             gd = d.get("guidance", {}) or {}
             tk = int(gd.get("top_k", 6))
-            # top_k 限制在 [2, 16]，既不过度稀疏也不过度密集
+            # Limit top_k to [2, 16] (neither too sparse nor too dense)
             tk = max(2, min(tk, 16))
             gd["top_k"] = tk
 
             w = float(gd.get("weight", 1.0))
-            # guidance 权重限制在 [0.2, 2.0]，防止完全失效或极端放大
+            # Limit guidance weight to [0.2, 2.0] to avoid disabling or extreme amplification
             w = max(0.2, min(w, 2.0))
             gd["weight"] = w
 
@@ -331,12 +325,12 @@ class Evolution:
         try:
             sch = d.get("schedule", {}) or {}
             loop_max = int(sch.get("loop_max", 800))
-            # loop_max 限制在 [100, 2000]
+            # Limit loop_max to [100, 2000]
             loop_max = max(100, min(loop_max, 2000))
             sch["loop_max"] = loop_max
 
             mni = int(sch.get("max_no_improve", 120))
-            # max_no_improve 限制在 [20, min(loop_max, 400)]
+            # Limit max_no_improve to [20, min(loop_max, 400)]
             mni = max(20, min(mni, min(loop_max, 400)))
             sch["max_no_improve"] = mni
 
@@ -348,15 +342,15 @@ class Evolution:
         try:
             st = d.get("stopping", {}) or {}
             tlim = float(st.get("time_limit_s", 8.0))
-            # 单次 GLS 时间限制在 [4.0, 9.5] 秒
+            # Limit single GLS time budget to [4.0, 9.5] seconds
             tlim = max(4.0, min(tlim, 9.5))
             st["time_limit_s"] = tlim
             d["stopping"] = st
         except Exception:
             pass
 
-        # operators 列表只做类型/必需字段检查，不强行裁剪 name，
-        # 这样 "or_opt2" / "or_opt3" 等名字可以安全透传到底层。
+        # Operators list: only validate type/required fields; do not hard-clip names.
+        # This allows names like "or_opt2"/"or_opt3" to pass through safely.
         try:
             ops = d.get("operators", None)
             if isinstance(ops, list):
@@ -376,8 +370,8 @@ class Evolution:
 
     def _format_t_history(self, parent_indiv):
         """
-        把 parent_indiv.other_inf['t_history'] 压缩成几行文本，用在 T 阶段 prompt 里。
-        现在会展示 iLDR / tLDR 这些动力学指标。
+        Compress parent_indiv.other_inf['t_history'] into a few lines for T-phase prompts.
+        This version also shows dynamics metrics such as iLDR / tLDR.
         """
         if not getattr(self, "t_history_in_prompt", True):
             return ""
@@ -415,49 +409,12 @@ class Evolution:
 
                 lines.append(line)
             except Exception:
-                # 某条坏了就跳过，避免整个 prompt 崩掉
+                # Skip malformed records to avoid breaking the whole prompt
                 continue
 
         if len(lines) == 1:
             return ""
         return "\n".join(lines)
-
-
-
-
-    #     other = parent_indiv.get("other_inf") or {}
-    #     hist = other.get("t_history") or []
-    #     if not hist:
-    #         return ""
-
-    #     maxlen = getattr(self, "t_history_maxlen", 5) or 5
-    #     recent = hist[-maxlen:]
-
-    #     lines = ["Recent T-phase attempts on this parent (most recent last):"]
-    #     for rec in recent:
-    #         try:
-    #             g  = rec.get("gen")
-    #             st = rec.get("stage")
-    #             ok = rec.get("accepted")
-    #             rs = rec.get("reason")
-    #             op = rec.get("obj_parent")
-    #             oc = rec.get("obj_child")
-    #             tp = rec.get("time_parent")
-    #             tc = rec.get("time_child")
-    #             lines.append(
-    #                 f"- [Gen {g}, {st}] "
-    #                 f"parent_gap={op:.6f}, child_gap={oc:.6f}, "
-    #                 f"parent_t={tp:.3f}s, child_t={tc:.3f}s, "
-    #                 f"accepted={ok}, reason={rs}"
-    #             )
-    #         except Exception:
-    #             continue
-
-    #     if len(lines) == 1:
-    #         return ""
-    #     return "\n".join(lines)
-
-
 
     # ---------------- t1_gls_structure ----------------
     def get_prompt_t1_gls_structure(self, parent_indiv, rejection_reason=None):
@@ -530,51 +487,6 @@ Parent GLSSpec:
 """
         return textwrap.dedent(prompt)
 
-
-
-    # ---------------- t1_gls_structure ----------------
-
-#         feedback_lines = []
-#         if rejection_reason:
-#             feedback_lines.append(
-#                 f"IMPORTANT: Previous attempt rejected: {rejection_reason}"
-#             )
-#         hist_txt = self._format_t_history(parent_indiv)
-#         if hist_txt:
-#             feedback_lines.append(hist_txt)
-#         feedback = "\n".join(feedback_lines)
-
-#         prompt = f"""
-# You are optimizing a Guided Local Search (GLS) **policy specification** for TSP on the **same GLS framework** (do not change the solver skeleton).
-
-# Your task in this step is **Structure Swap**: propose a new **GLSSpec JSON** that changes only the macro structure (candidate set type/size, operator sequence, high-level schedule, perturb placement), with the goal of **reducing runtime** while keeping solution quality acceptable.
-
-# Parent performance:
-# - objective (gap): {par_obj}
-# - eval_time (sec): {par_time}
-
-# {feedback}
-# HARD RULES:
-# - Output **only** a JSON object of the following schema (no Python code, no extra text):
-# {{
-#   "init": {{"method": "nearest_neighbor|greedy|random", "start": 0}},
-#   "candset": {{"type": "kNN|delaunay|hybrid", "k": <int>}},
-#   "operators": [{{"name": "two_opt|relocate", "strategy": "first|best"}}, ...],
-#   "schedule": {{"loop_max": <int>, "max_no_improve": <int>}},
-#   "accept": {{"type": "improve_only|sim_anneal", "temp0": <float>}},
-#   "perturb": {{"type": "double_bridge|none", "interval": <int>}},
-#   "guidance": {{"where": "pre_ls|mid_ls|post_ls", "weight": <float>, "top_k": <int>}},
-#   "stopping": {{"time_limit_s": <float>}}
-# }}
-# - Keep **time_limit_s ≤ parent**; prefer **k smaller**, shorter loops, first-improvement, and cheap perturbation.
-# - DO NOT change function signatures of the evolved heuristic (update_edge_distance).
-# - This is structure-level change; do not micro-tune every numeric field.
-
-# Parent GLSSpec:
-# {json.dumps(par_spec, indent=2)}
-# """
-#         return textwrap.dedent(prompt)
-
     def t1_gls_structure(self, parent_indiv, rejection_reason=None):
         prompt = self.get_prompt_t1_gls_structure(parent_indiv, rejection_reason)
         response = self.interface_llm.get_response(prompt) or ""
@@ -589,7 +501,6 @@ Parent GLSSpec:
             if self.debug_mode:
                 print("[t1_gls_structure] Failed to parse JSON. Raw response:\n", response)
             return None
-
 
     def get_prompt_t2_gls_param(self, parent_indiv, rejection_reason=None):
         par_spec = parent_indiv.get("gls_spec") or self._default_gls_spec_dict()
@@ -645,39 +556,6 @@ Parent GLSSpec:
 """
         return textwrap.dedent(prompt)
 
-
-
-    # ---------------- t2_gls_param ----------------
-
-#         feedback_lines = []
-#         if rejection_reason:
-#             feedback_lines.append(
-#                 f"IMPORTANT: Previous attempt rejected: {rejection_reason}"
-#             )
-#         hist_txt = self._format_t_history(parent_indiv)
-#         if hist_txt:
-#             feedback_lines.append(hist_txt)
-#         feedback = "\n".join(feedback_lines)
-
-#         parent_gls = par_spec
-#         prompt = f"""
-# Now you are a **Parameter Tuning Specialist**. Keep the **structure unchanged**, and micro-tune **numeric fields** only (k, loop_max, max_no_improve, interval, top_k, weight, temp0, time_limit_s), targeting **faster runtime** with **no worse quality**.
-
-# Parent performance:
-# - objective (gap): {par_obj}
-# - eval_time (sec): {par_time}
-
-# {feedback}
-# Rules:
-# - Output **only** a GLSSpec JSON (same schema as before). No Python code.
-# - Keep time_limit_s ≤ parent.
-# - Prefer smaller k, smaller loop_max, moderate max_no_improve, and small top_k.
-
-# Parent GLSSpec:
-# {json.dumps(parent_gls, indent=2)}
-# """
-#         return textwrap.dedent(prompt)
-
     def t2_gls_param(self, parent_indiv, rejection_reason=None):
         prompt = self.get_prompt_t2_gls_param(parent_indiv, rejection_reason)
         response = self.interface_llm.get_response(prompt) or ""
@@ -692,7 +570,6 @@ Parent GLSSpec:
             if self.debug_mode:
                 print("[t2_gls_param] Failed to parse JSON. Raw response:\n", response)
             return None
-
 
     def get_prompt_t3_gls_module(self, parent_indiv, rejection_reason=None):
         par_spec = parent_indiv.get("gls_spec") or self._default_gls_spec_dict()
@@ -746,34 +623,6 @@ Parent GLSSpec:
 {json.dumps(par_spec, indent=2)}
 """
         return textwrap.dedent(prompt)
-
-
-
-    # ---------------- t3_gls_module ----------------
-
-#         feedback_lines = []
-#         if rejection_reason:
-#             feedback_lines.append(
-#                 f"IMPORTANT: Previous attempt rejected: {rejection_reason}"
-#             )
-#         hist_txt = self._format_t_history(parent_indiv)
-#         if hist_txt:
-#             feedback_lines.append(hist_txt)
-#         feedback = "\n".join(feedback_lines)
-
-#         prompt = f"""
-# You may **modify only ONE module** in GLSSpec (e.g., switch two_opt strategy first↔best, or change perturb type), giving a **minimal yet effective** structural tweak.
-
-# {feedback}
-# Rules:
-# - Output **only** a GLSSpec JSON (same schema). No Python code.
-# - Keep time_limit_s ≤ parent; do not increase loop_max or k significantly.
-# - Do not change the evolved heuristic function signature.
-
-# Parent GLSSpec:
-# {json.dumps(par_spec, indent=2)}
-# """
-#         return textwrap.dedent(prompt)
 
     def t3_gls_module(self, parent_indiv, rejection_reason=None):
         prompt = self.get_prompt_t3_gls_module(parent_indiv, rejection_reason)

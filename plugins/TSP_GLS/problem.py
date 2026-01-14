@@ -1,10 +1,9 @@
-# DASH/plugins/tsp_gls/problem.py
+# plugins/TSP_GLS/problem.py
 import numpy as np
 import time
 import os
 import types
 import warnings
-import sys
 import json
 
 from .utils import readTSPRandom
@@ -43,11 +42,12 @@ class TSPGLS:
         debug_mode: bool = True,
     ) -> None:
         """
-        TSP + GLS 的本地问题接口。
+        Local problem interface for TSP + GLS.
 
-        两种数据来源：
-        1）兼容旧流程：tsplib_root=None 时，从 TrainingData/TSPAEL64.pkl 读取；
-        2）新流程：指定 tsplib_root / solutions_file / case_names，直接从原始 TSPLIB 目录读取。
+        Two data sources are supported:
+          1) Legacy flow: if tsplib_root is None, load from TrainingData/TSPAEL64.pkl;
+          2) TSPLIB flow: provide tsplib_root / solutions_file / case_names to load
+             raw TSPLIB instances directly.
         """
         self.time_limit = float(time_limit)
         self.ite_max = int(ite_max)
@@ -56,17 +56,8 @@ class TSPGLS:
 
         path = os.path.dirname(os.path.abspath(__file__))
 
-        # ---------------- 数据来源：TSPLIB 原始目录 ----------------
+        # ---------------- Data source: raw TSPLIB directory ----------------
         if tsplib_root is not None:
-            try:
-                from .utils import readTSPLib_runtime as tsplib_rt  # noqa: F401
-            except ImportError as e:
-                raise ImportError(
-                    "Failed to import utils.readTSPLib_runtime. "
-                    "Please create tsp_gls/utils/readTSPLib_runtime.py as designed "
-                    "and make sure tsplib95 is installed."
-                ) from e
-
             root_abs = tsplib_root
             if not os.path.isabs(root_abs):
                 root_abs = os.path.join(path, tsplib_root)
@@ -92,7 +83,7 @@ class TSPGLS:
             self.instances = inst_list
             self.opt_costs = opt_costs
 
-        # ---------------- 数据来源：旧版 TSPAEL64.pkl ----------------
+        # ---------------- Data source: legacy TSPAEL64.pkl ----------------
         else:
             self.instance_path = os.path.join(path, "TrainingData", "TSPAEL64.pkl")
             self.coords, self.instances, self.opt_costs = readTSPRandom.read_instance_all(
@@ -100,13 +91,13 @@ class TSPGLS:
             )
             self.instance_names = [f"inst_{i}" for i in range(len(self.coords))]
 
-        # n_inst_eva：控制参与评估的实例数（默认全部）
+        # n_inst_eva controls how many instances are used in evaluation (default: all)
         if n_inst_eva is None:
             self.n_inst_eva = len(self.coords)
         else:
             self.n_inst_eva = max(1, min(int(n_inst_eva), len(self.coords)))
 
-        # 截断到前 n_inst_eva 个实例，保证后续索引一致
+        # Truncate to the first n_inst_eva instances for consistent indexing.
         if self.n_inst_eva < len(self.coords):
             self.coords = self.coords[: self.n_inst_eva]
             self.instances = self.instances[: self.n_inst_eva]
@@ -123,12 +114,7 @@ class TSPGLS:
         )
 
     def _compute_instance_features(self, coords, dis_matrix):
-        """
-        给当前 instance 提取一组简单但通用的特征，用于后续 LDRPO / 分析：
-        - n_nodes：节点数
-        - mean/std/min/max_dist：距离矩阵的统计量（只看上三角）
-        - bbox_w/bbox_h：坐标的包围盒宽高
-        """
+        """Extract lightweight, general instance features for logging / analysis."""
         try:
             n = int(dis_matrix.shape[0]) if dis_matrix is not None else 0
 
@@ -169,14 +155,10 @@ class TSPGLS:
             return {}
 
     # ------------------------------------------------------------------
-    #  GLS 评估（旧骨架 + GLSSpec 骨架）
+    # GLS evaluation (legacy skeleton + GLSSpec skeleton)
     # ------------------------------------------------------------------
     def evaluateGLS_legacy(self, heuristic_module):
-        """
-        沿用原先的 GLS 骨架评估接口（无 GLSSpec）。
-        返回：
-            mean_gap, [ {index, name, gap, eval_time}, ... ]
-        """
+        """Legacy GLS evaluation interface (no GLSSpec)."""
         n_eval = self.n_inst_eva
         gaps = np.zeros(n_eval, dtype=np.float64)
         inst_details = []
@@ -200,11 +182,10 @@ class TSPGLS:
             gaps[i] = float(gap)
 
             name = None
-            if hasattr(self, "instance_names"):
-                try:
-                    name = self.instance_names[i]
-                except Exception:
-                    name = None
+            try:
+                name = self.instance_names[i]
+            except Exception:
+                name = None
 
             inst_details.append(
                 {
@@ -223,21 +204,8 @@ class TSPGLS:
         gls_spec: GLSSpec | dict | None,
         return_traj_meta: bool = True,
     ):
-        """
-        使用 GLSSpec（或等价 dict）来配置 GLS 骨干：
-        - 若 gls_spec 是 GLSSpec，就直接用；
-        - 若是 dict，用 from_json 解析；
-        - 若为 None，则退回 default_gls_spec()。
-
-        返回：
-          - 若 return_traj_meta=True:
-              mean_gap, inst_details, traj_meta
-            其中 traj_meta 至少包含:
-              {"tLDR_traj_mean": float|None, "tLDR_traj_list": list[float]}
-          - 否则:
-              mean_gap, inst_details
-        """
-        # 规范化 spec
+        """Evaluate GLS under a GLSSpec (or dict with the same schema)."""
+        # Normalize spec
         if isinstance(gls_spec, GLSSpec):
             spec = gls_spec
         elif isinstance(gls_spec, dict):
@@ -287,7 +255,6 @@ class TSPGLS:
                 gap = 0.0
             gaps[i] = float(gap)
 
-            # 实例名字（沿用 instance_names）
             name = None
             try:
                 if self.instance_names is not None and i < len(self.instance_names):
@@ -331,25 +298,20 @@ class TSPGLS:
         return mean_gap, inst_details
 
     # ------------------------------------------------------------------
-    #  DAG 评估（保留兼容；TSP 下不推荐使用）
+    # DAG evaluation (kept for compatibility; not recommended for TSP here)
     # ------------------------------------------------------------------
     def evaluateDAG(self, emitted_code, budgets: dict | None = None):
         dag_module = types.ModuleType("dag_solver_module")
         try:
-            dag_module.utils = __import__(f"{__package__}.utils.utils", fromlist=['utils'])
-            dag_module.gls = __import__(f"{__package__}.gls", fromlist=['gls'])
-            dag_module.gls.gls_evol = __import__(f"{__package__}.gls.gls_evol", fromlist=['gls_evol']).gls_evol
-            dag_module.gls.gls_operators = __import__(f"{__package__}.gls.gls_operators", fromlist=['gls_operators']).gls_operators
+            dag_module.utils = __import__(f"{__package__}.utils.utils", fromlist=["utils"])
+            dag_module.gls = __import__(f"{__package__}.gls", fromlist=["gls"])
+            dag_module.gls.gls_evol = __import__(f"{__package__}.gls.gls_evol", fromlist=["gls_evol"]).gls_evol
+            dag_module.gls.gls_operators = __import__(f"{__package__}.gls.gls_operators", fromlist=["gls_operators"]).gls_operators
         except Exception:
             pass
 
-        time_limit_cap = None
         fast_eval_n = None
         if isinstance(budgets, dict):
-            try:
-                time_limit_cap = float(budgets.get("time_limit_s", None))
-            except Exception:
-                pass
             try:
                 fast_eval_n = int(budgets.get("fast_eval_n", None))
             except Exception:
@@ -388,10 +350,8 @@ class TSPGLS:
                 print(f"--------------------------")
             return 1e10
 
-    # ------------------------------------------------------------------
-    #  若 DAG 的 solve 返回的是“边列表”而非城市序列，这里做一个小工具转换
-    # ------------------------------------------------------------------
     def _route_to_order_list(self, route):
+        """Convert edge-list route into a 1D node order if needed."""
         if not route:
             return None
 
@@ -433,6 +393,7 @@ class TSPGLS:
             return None
 
     def _closed_tour_cost(self, distmat, route) -> float | None:
+        """Compute closed tour cost under distmat."""
         if route is None:
             return None
 
@@ -460,23 +421,22 @@ class TSPGLS:
         return total
 
     # ------------------------------------------------------------------
-    #  顶层 evaluate：供 DASH 调用
+    # Top-level evaluate entry for DASH
     # ------------------------------------------------------------------
     def evaluate(self, individual):
         """
-        顶层评估接口，兼容原有 DASH：
-        - 优先走 GLSSpec 路径（个体带 gls_spec + code）；
-        - 再退化到 DAG 路径（个体带 dag_spec）；
-        - 最后退化到 legacy GLS（只有 code）。
+        Top-level evaluation interface (DASH-compatible):
+          - Prefer GLSSpec path (individual has gls_spec + code);
+          - Fall back to DAG path if dag_spec exists (compat only);
+          - Finally fall back to legacy GLS (code only).
 
-        返回 dict：{"fitness": float, "meta": {...}}，
-        其中 meta["instances"] 会包含 per-instance 的结果：
-            [{"index": i, "name": case_name, "gap": ..., "eval_time": ...}, ...]
+        Returns:
+          {"fitness": float, "meta": {...}}
         """
         fitness = 1e10
         meta: dict = {}
 
-        # ---------- 优先：GLS 规格（t 阶段） ----------
+        # ---------- Priority: GLS spec ----------
         if individual.get("gls_spec") and individual.get("code"):
             try:
                 heuristic_module = types.ModuleType("heuristic_module")
@@ -495,7 +455,7 @@ class TSPGLS:
             except Exception as e:
                 meta["error_gls_spec"] = f"GLS-spec evaluation failed: {e}"
 
-        # ---------- 其次：DAG（保留兼容；TSP 不建议继续使用） ----------
+        # ---------- DAG (compatibility only) ----------
         if individual.get("dag_spec"):
             dag_spec = individual["dag_spec"]
             meta["dag_plan"] = dag_spec
@@ -531,7 +491,7 @@ class TSPGLS:
                     print(e)
                 meta["error_dag"] = f"DAG evaluation failed: {e}"
 
-        # ---------- 最后：仅 code → legacy GLS ----------
+        # ---------- Fallback: legacy GLS ----------
         if individual.get("code"):
             code_string = individual["code"]
             try:
